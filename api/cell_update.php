@@ -17,39 +17,35 @@ if (!$schema || !$table || !$pkCol || $pkVal === '' || !$col) {
     echo json_encode(['error' => 'Parameter tidak lengkap']); exit;
 }
 
-// BUG-01 FIX: Blokir akses ke schema sistem
-$blockedSchemas = ['pg_catalog', 'information_schema', 'pg_toast', 'pg_temp'];
-if (in_array(strtolower($schema), $blockedSchemas)) {
+// Blokir akses ke schema sistem
+if (in_array(strtolower($schema), systemSchemas())) {
     echo json_encode(['error' => 'Akses ke schema sistem tidak diizinkan']); exit;
 }
 
-// Validasi schema harus milik user (ada di search_path / bukan sistem)
 try {
-    $schemaChk = $pdo->prepare("SELECT 1 FROM information_schema.schemata
-        WHERE schema_name = ? AND schema_name NOT IN ('pg_catalog','information_schema','pg_toast') LIMIT 1");
+    // Validasi schema
+    $schemaChk = $pdo->prepare("SELECT 1 FROM information_schema.schemata WHERE schema_name = ? LIMIT 1");
     $schemaChk->execute([$schema]);
     if (!$schemaChk->fetchColumn()) {
         echo json_encode(['error' => 'Schema tidak valid']); exit;
     }
 
-    // Validasi nama kolom & tabel dari information_schema
-    $chk = $pdo->prepare("SELECT 1 FROM information_schema.columns
-        WHERE table_schema=? AND table_name=? AND column_name=? LIMIT 1");
+    // Validasi kolom
+    $chk = $pdo->prepare(columnExistsQuery());
     $chk->execute([$schema, $table, $col]);
     if (!$chk->fetchColumn()) {
         echo json_encode(['error' => 'Kolom tidak valid']); exit;
     }
 
-    // Validasi pkCol juga harus kolom valid di tabel yang sama
-    $pkChk = $pdo->prepare("SELECT 1 FROM information_schema.columns
-        WHERE table_schema=? AND table_name=? AND column_name=? LIMIT 1");
+    // Validasi pkCol
+    $pkChk = $pdo->prepare(columnExistsQuery());
     $pkChk->execute([$schema, $table, $pkCol]);
     if (!$pkChk->fetchColumn()) {
         echo json_encode(['error' => 'Primary key tidak valid']); exit;
     }
 
     $newVal = $setNull ? null : ($val === '' ? null : $val);
-    $sql    = 'UPDATE "' . $schema . '"."' . $table . '" SET "' . $col . '" = ? WHERE "' . $pkCol . '" = ?';
+    $sql    = 'UPDATE ' . qualifiedTable($schema, $table) . ' SET ' . qi($col) . ' = ? WHERE ' . qi($pkCol) . ' = ?';
     $stmt   = $pdo->prepare($sql);
     $stmt->execute([$newVal, $pkVal]);
 
@@ -57,4 +53,3 @@ try {
 } catch (Exception $e) {
     echo json_encode(['error' => $e->getMessage()]);
 }
-

@@ -119,6 +119,28 @@ code { font-family: var(--mono); font-size: 12px; background: var(--bg-input); p
 .auth-card h1 { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
 .auth-sub { color: var(--text-secondary); margin-bottom: 24px; }
 
+/* Driver selector */
+.driver-selector { display: flex; gap: 8px; margin-bottom: 20px; }
+.driver-opt { flex: 1; cursor: pointer; }
+.driver-opt input[type=radio] { display: none; }
+.driver-card {
+    display: flex; align-items: center; gap: 8px; justify-content: center;
+    padding: 10px 12px; border-radius: var(--radius);
+    border: 1.5px solid var(--border); font-size: 13px; font-weight: 500;
+    color: var(--text-muted); transition: all .15s; user-select: none;
+}
+.driver-opt input:checked + .driver-card {
+    border-color: var(--accent); color: var(--accent);
+    background: var(--accent-dim);
+}
+.driver-card svg { flex-shrink: 0; }
+
+/* Driver badge di sidebar */
+.driver-badge { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px;
+                text-transform: uppercase; letter-spacing: .4px; margin-right: 4px; }
+.driver-badge-pgsql  { background: #336791; color: #fff; }
+.driver-badge-mysql  { background: #e48e00; color: #fff; }
+
 /* ===== App Layout ===== */
 .app-page { display: flex; height: 100vh; overflow: hidden; }
 

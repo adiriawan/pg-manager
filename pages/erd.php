@@ -2,26 +2,32 @@
 // Ambil semua tabel + kolom
 $tableColumns = [];
 try {
-    $stmt = $pdo->prepare("
-        SELECT
-            c.table_name,
-            c.column_name,
-            c.data_type,
-            c.is_nullable,
-            c.column_default,
-            CASE WHEN pk.column_name IS NOT NULL THEN true ELSE false END as is_primary
-        FROM information_schema.columns c
-        LEFT JOIN (
-            SELECT ku.table_name, ku.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage ku
-                ON tc.constraint_name = ku.constraint_name AND tc.table_schema = ku.table_schema
-            WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = ?
-        ) pk ON c.table_name = pk.table_name AND c.column_name = pk.column_name
-        WHERE c.table_schema = ?
-        ORDER BY c.table_name, c.ordinal_position
-    ");
-    $stmt->execute([$schema, $schema]);
+    if (isMySQL()) {
+        $stmt = $pdo->prepare("
+            SELECT c.table_name, c.column_name, c.data_type, c.is_nullable, c.column_default,
+                   CASE WHEN c.COLUMN_KEY = 'PRI' THEN 1 ELSE 0 END as is_primary
+            FROM information_schema.COLUMNS c
+            WHERE c.TABLE_SCHEMA = ?
+            ORDER BY c.table_name, c.ordinal_position
+        ");
+        $stmt->execute([$schema]);
+    } else {
+        $stmt = $pdo->prepare("
+            SELECT c.table_name, c.column_name, c.data_type, c.is_nullable, c.column_default,
+                   CASE WHEN pk.column_name IS NOT NULL THEN true ELSE false END as is_primary
+            FROM information_schema.columns c
+            LEFT JOIN (
+                SELECT ku.table_name, ku.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage ku
+                    ON tc.constraint_name = ku.constraint_name AND tc.table_schema = ku.table_schema
+                WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = ?
+            ) pk ON c.table_name = pk.table_name AND c.column_name = pk.column_name
+            WHERE c.table_schema = ?
+            ORDER BY c.table_name, c.ordinal_position
+        ");
+        $stmt->execute([$schema, $schema]);
+    }
     foreach ($stmt->fetchAll() as $row) {
         $tableColumns[$row['table_name']][] = $row;
     }
@@ -30,22 +36,30 @@ try {
 // Ambil semua foreign key
 $foreignKeys = [];
 try {
-    $stmt = $pdo->prepare("
-        SELECT
-            tc.table_name as from_table,
-            kcu.column_name as from_column,
-            ccu.table_name as to_table,
-            ccu.column_name as to_column,
-            tc.constraint_name
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu
-            ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-        JOIN information_schema.constraint_column_usage ccu
-            ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
-        WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = ?
-        ORDER BY tc.table_name, kcu.column_name
-    ");
-    $stmt->execute([$schema]);
+    if (isMySQL()) {
+        $stmt = $pdo->prepare("
+            SELECT kcu.TABLE_NAME as from_table, kcu.COLUMN_NAME as from_column,
+                   kcu.REFERENCED_TABLE_NAME as to_table, kcu.REFERENCED_COLUMN_NAME as to_column,
+                   kcu.CONSTRAINT_NAME as constraint_name
+            FROM information_schema.KEY_COLUMN_USAGE kcu
+            WHERE kcu.TABLE_SCHEMA = ? AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+            ORDER BY kcu.TABLE_NAME, kcu.COLUMN_NAME
+        ");
+        $stmt->execute([$schema]);
+    } else {
+        $stmt = $pdo->prepare("
+            SELECT tc.table_name as from_table, kcu.column_name as from_column,
+                   ccu.table_name as to_table, ccu.column_name as to_column, tc.constraint_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+                ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.constraint_column_usage ccu
+                ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = ?
+            ORDER BY tc.table_name, kcu.column_name
+        ");
+        $stmt->execute([$schema]);
+    }
     $foreignKeys = $stmt->fetchAll();
 } catch (Exception $e) {}
 ?>

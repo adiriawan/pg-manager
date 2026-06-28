@@ -2,29 +2,44 @@
 // ── Ambil semua tabel di schema aktif ────────────────────────
 $allTableCols = [];
 try {
-    $stmt = $pdo->prepare("
-        SELECT c.table_name, c.column_name, c.data_type,
-               CASE WHEN pk.column_name IS NOT NULL THEN true ELSE false END as is_primary,
-               CASE WHEN fk.column_name IS NOT NULL THEN true ELSE false END as is_foreign
-        FROM information_schema.columns c
-        LEFT JOIN (
-            SELECT ku.table_name, ku.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage ku
-                ON tc.constraint_name = ku.constraint_name AND tc.table_schema = ku.table_schema
-            WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = ?
-        ) pk ON c.table_name = pk.table_name AND c.column_name = pk.column_name
-        LEFT JOIN (
-            SELECT kcu.table_name, kcu.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-                ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-            WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = ?
-        ) fk ON c.table_name = fk.table_name AND c.column_name = fk.column_name
-        WHERE c.table_schema = ?
-        ORDER BY c.table_name, c.ordinal_position
-    ");
-    $stmt->execute([$schema, $schema, $schema]);
+    if (isMySQL()) {
+        $stmt = $pdo->prepare("
+            SELECT c.table_name, c.column_name, c.data_type,
+                   CASE WHEN c.COLUMN_KEY = 'PRI' THEN 1 ELSE 0 END as is_primary,
+                   CASE WHEN kcu.COLUMN_NAME IS NOT NULL THEN 1 ELSE 0 END as is_foreign
+            FROM information_schema.COLUMNS c
+            LEFT JOIN information_schema.KEY_COLUMN_USAGE kcu
+                ON kcu.TABLE_SCHEMA = c.TABLE_SCHEMA AND kcu.TABLE_NAME = c.TABLE_NAME
+                AND kcu.COLUMN_NAME = c.COLUMN_NAME AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+            WHERE c.TABLE_SCHEMA = ?
+            ORDER BY c.table_name, c.ordinal_position
+        ");
+        $stmt->execute([$schema]);
+    } else {
+        $stmt = $pdo->prepare("
+            SELECT c.table_name, c.column_name, c.data_type,
+                   CASE WHEN pk.column_name IS NOT NULL THEN true ELSE false END as is_primary,
+                   CASE WHEN fk.column_name IS NOT NULL THEN true ELSE false END as is_foreign
+            FROM information_schema.columns c
+            LEFT JOIN (
+                SELECT ku.table_name, ku.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage ku
+                    ON tc.constraint_name = ku.constraint_name AND tc.table_schema = ku.table_schema
+                WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = ?
+            ) pk ON c.table_name = pk.table_name AND c.column_name = pk.column_name
+            LEFT JOIN (
+                SELECT kcu.table_name, kcu.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+                WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = ?
+            ) fk ON c.table_name = fk.table_name AND c.column_name = fk.column_name
+            WHERE c.table_schema = ?
+            ORDER BY c.table_name, c.ordinal_position
+        ");
+        $stmt->execute([$schema, $schema, $schema]);
+    }
     foreach ($stmt->fetchAll() as $row) {
         $allTableCols[$row['table_name']][] = $row;
     }
@@ -33,17 +48,27 @@ try {
 // ── Ambil FK otomatis untuk saran relasi ─────────────────────
 $fkSuggestions = [];
 try {
-    $stmt = $pdo->prepare("
-        SELECT kcu.table_name as from_table, kcu.column_name as from_col,
-               ccu.table_name as to_table,   ccu.column_name as to_col
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu
-            ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-        JOIN information_schema.constraint_column_usage ccu
-            ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
-        WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = ?
-    ");
-    $stmt->execute([$schema]);
+    if (isMySQL()) {
+        $stmt = $pdo->prepare("
+            SELECT kcu.TABLE_NAME as from_table, kcu.COLUMN_NAME as from_col,
+                   kcu.REFERENCED_TABLE_NAME as to_table, kcu.REFERENCED_COLUMN_NAME as to_col
+            FROM information_schema.KEY_COLUMN_USAGE kcu
+            WHERE kcu.TABLE_SCHEMA = ? AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+        ");
+        $stmt->execute([$schema]);
+    } else {
+        $stmt = $pdo->prepare("
+            SELECT kcu.table_name as from_table, kcu.column_name as from_col,
+                   ccu.table_name as to_table,   ccu.column_name as to_col
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+                ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.constraint_column_usage ccu
+                ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = ?
+        ");
+        $stmt->execute([$schema]);
+    }
     $fkSuggestions = $stmt->fetchAll();
 } catch (Exception $e) {}
 
@@ -83,7 +108,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['run_join'])) {
             // format: "tablename.colname"
             [$tname, $cname] = explode('.', $sc, 2);
             $alias = $tableAliases[$tname] ?? 't1';
-            $selectParts[] = "$alias.\"$cname\" AS \"{$alias}_{$cname}\"";
+            $selectParts[] = "$alias." . qi($cname) . " AS " . qi("{$alias}_{$cname}");
         }
     } else {
         // Pilih semua kolom
@@ -95,7 +120,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['run_join'])) {
     // BUILD FROM + JOIN
     $firstTable = array_shift($joinTables);
     $firstAlias = $tableAliases[$firstTable];
-    $fromClause = "\"$schema\".\"$firstTable\" AS $firstAlias";
+    $fromClause = qualifiedTable($schema, $firstTable) . " AS $firstAlias";
 
     $joinClauses = [];
     foreach ($joinTables as $i => $t) {
@@ -109,11 +134,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['run_join'])) {
             [$rt, $rc] = explode('.', $onRight, 2);
             $la = $tableAliases[$lt] ?? $lt;
             $ra = $tableAliases[$rt] ?? $rt;
-            $on = "$la.\"$lc\" = $ra.\"$rc\"";
+            $on = "$la." . qi($lc) . " = $ra." . qi($rc);
         } else {
             $on = '1=1';
         }
-        $joinClauses[] = "$jtype JOIN \"$schema\".\"$t\" AS $alias ON $on";
+        $joinClauses[] = "$jtype JOIN " . qualifiedTable($schema, $t) . " AS $alias ON $on";
     }
     // Kembalikan firstTable ke array
     array_unshift($joinTables, $firstTable);
@@ -122,13 +147,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['run_join'])) {
     $whereParts  = [];
     $whereParams = [];
     $noValOps    = ['IS NULL', 'IS NOT NULL'];
+    $likeSql    = isMySQL() ? 'LIKE ?' : 'ILIKE ?';
+    $notLikeSql = isMySQL() ? 'NOT LIKE ?' : 'NOT ILIKE ?';
     $opMap = [
-        'eq'          => '= ?',       'neq'      => '!= ?',
-        'ilike'       => 'ILIKE ?',   'not_ilike'=> 'NOT ILIKE ?',
-        'gt'          => '> ?',       'gte'      => '>= ?',
-        'lt'          => '< ?',       'lte'      => '<= ?',
-        'is_null'     => 'IS NULL',   'is_not_null' => 'IS NOT NULL',
-        'starts_with' => 'ILIKE ?',   'ends_with' => 'ILIKE ?',
+        'eq'          => '= ?',         'neq'        => '!= ?',
+        'ilike'       => $likeSql,       'not_ilike'  => $notLikeSql,
+        'gt'          => '> ?',          'gte'        => '>= ?',
+        'lt'          => '< ?',          'lte'        => '<= ?',
+        'is_null'     => 'IS NULL',      'is_not_null' => 'IS NOT NULL',
+        'starts_with' => $likeSql,       'ends_with'  => $likeSql,
     ];
     foreach ($whereCols as $i => $wc) {
         if (!$wc) continue;
@@ -138,9 +165,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['run_join'])) {
         $wval  = $whereVals[$i]   ?? '';
         $wlog  = strtoupper($whereLogics[$i] ?? 'AND');
         $wlog  = in_array($wlog, ['AND','OR']) ? $wlog : 'AND';
-        $sqlOp = $opMap[$wop] ?? 'ILIKE ?';
+        $sqlOp = $opMap[$wop] ?? $likeSql;
 
-        $expr = "$wa.\"$wcol\"::text $sqlOp";
+        $colExpr = castText("$wa." . qi($wcol));
+        $expr    = "$colExpr $sqlOp";
         if (strpos($sqlOp, '?') !== false) {
             $pv = $wval;
             if ($wop === 'ilike' || $wop === 'not_ilike') $pv = "%$wval%";
@@ -550,7 +578,7 @@ function shortType2(string $t): string {
         <div class="modal-body">
             <div class="code-block">
                 <div class="code-header">
-                    PostgreSQL
+                    SQL
                     <button type="button" class="btn btn-outline btn-sm" style="float:right;margin-top:-2px"
                         onclick="copySQL()">📋 Salin</button>
                 </div>

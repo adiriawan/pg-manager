@@ -3,11 +3,13 @@ require_once 'config.php';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     if ($_POST['action'] === 'connect') {
+        $driver = in_array($_POST['driver'] ?? '', ['pgsql','mysql']) ? $_POST['driver'] : 'pgsql';
         $creds = [
+            'driver'   => $driver,
             'host'     => trim($_POST['host'] ?? 'localhost'),
-            'port'     => trim($_POST['port'] ?? '5432'),
-            'dbname'   => trim($_POST['dbname'] ?? 'postgres'),
-            'user'     => trim($_POST['user'] ?? 'postgres'),
+            'port'     => trim($_POST['port'] ?? ($driver === 'mysql' ? '3306' : '5432')),
+            'dbname'   => trim($_POST['dbname'] ?? ($driver === 'mysql' ? 'mysql' : 'postgres')),
+            'user'     => trim($_POST['user'] ?? ($driver === 'mysql' ? 'root' : 'postgres')),
             'password' => $_POST['password'] ?? '',
         ];
         tryConnect($creds);
@@ -27,7 +29,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $newCreds = array_merge($existing, ['dbname' => $newDb]);
             tryConnect($newCreds);
         }
-        header('Location: index.php');
+        header('Location: app.php');
         exit;
     }
 }
@@ -70,6 +72,25 @@ unset($_SESSION['db_error']);
         <?php endif; ?>
         <form method="POST" action="index.php" id="connect-form">
             <input type="hidden" name="action" value="connect">
+
+            <!-- Driver selector -->
+            <div class="driver-selector">
+                <label class="driver-opt" id="drv-pgsql">
+                    <input type="radio" name="driver" value="pgsql" checked onchange="onDriverChange()">
+                    <span class="driver-card">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><ellipse cx="12" cy="5" rx="9" ry="3" stroke="currentColor" stroke-width="1.5"/><path d="M3 5v5c0 1.657 4.03 3 9 3s9-1.343 9-3V5" stroke="currentColor" stroke-width="1.5"/><path d="M3 10v5c0 1.657 4.03 3 9 3s9-1.343 9-3v-5" stroke="currentColor" stroke-width="1.5"/><path d="M3 15v4c0 1.657 4.03 3 9 3s9-1.343 9-3v-4" stroke="currentColor" stroke-width="1.5"/></svg>
+                        PostgreSQL
+                    </span>
+                </label>
+                <label class="driver-opt" id="drv-mysql">
+                    <input type="radio" name="driver" value="mysql" onchange="onDriverChange()">
+                    <span class="driver-card">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 3C7.03 3 3 7.03 3 12s4.03 9 9 9 9-4.03 9-9-4.03-9-9-9z" stroke="currentColor" stroke-width="1.5"/><path d="M8 12l3 3 5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        MySQL / MariaDB
+                    </span>
+                </label>
+            </div>
+
             <div class="form-row">
                 <div class="form-group">
                     <label>Host</label>
@@ -159,6 +180,25 @@ unset($_SESSION['db_error']);
         document.getElementById('inp-password').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') { e.preventDefault(); loadDatabases(); }
         });
+
+        function onDriverChange() {
+            const driver = document.querySelector('input[name=driver]:checked').value;
+            const portEl = document.getElementById('inp-port');
+            const userEl = document.getElementById('inp-user');
+            // Update port default
+            if (portEl.value === '5432' || portEl.value === '3306') {
+                portEl.value = driver === 'mysql' ? '3306' : '5432';
+            }
+            // Update user default
+            if (userEl.value === 'root' || userEl.value === 'postgres' || userEl.value === 'adiriawan') {
+                userEl.value = driver === 'mysql' ? 'root' : 'adiriawan';
+            }
+            // Reset database list
+            const sel = document.getElementById('inp-dbname');
+            sel.innerHTML = '<option value="">— muat daftar database —</option>';
+            sel.disabled = true;
+            document.getElementById('btn-connect').disabled = true;
+        }
         </script>
     </div>
 </div>

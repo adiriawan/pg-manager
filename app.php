@@ -13,10 +13,9 @@ $page   = $_GET['page'] ?? 'table-editor';
 $schema = $_GET['schema'] ?? 'public';
 $table  = $_GET['table'] ?? null;
 
-// BUG-02 FIX: Blokir akses schema sistem di seluruh app
-$SYSTEM_SCHEMAS = ['pg_catalog', 'information_schema', 'pg_toast'];
-if (in_array(strtolower($schema), $SYSTEM_SCHEMAS)) {
-    $schema = 'public';
+// Blokir akses schema sistem di seluruh app
+if (in_array(strtolower($schema), systemSchemas())) {
+    $schema = isMySQL() ? ($creds['dbname'] ?? 'public') : 'public';
     $table  = null;
 }
 
@@ -86,8 +85,7 @@ if (isset($_GET['export']) && $page === 'sql-editor' && isset($_SESSION['last_sq
 // Ambil semua schema
 $schemas = [];
 try {
-    $stmt = $pdo->query("SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('pg_catalog','information_schema','pg_toast') ORDER BY schema_name");
-    $schemas = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    $schemas = $pdo->query(schemataQuery())->fetchAll(PDO::FETCH_COLUMN);
 } catch (Exception $e) {}
 
 // Ambil semua tabel di schema aktif
@@ -137,7 +135,10 @@ try {
         </div>
         <div class="sidebar-db-info">
             <div class="sidebar-db-name"><?= htmlspecialchars($creds['dbname']) ?></div>
-            <div class="sidebar-db-host"><?= htmlspecialchars($creds['host']) ?>:<?= htmlspecialchars($creds['port']) ?></div>
+            <div class="sidebar-db-host">
+                <span class="driver-badge driver-badge-<?= htmlspecialchars($creds['driver'] ?? 'pgsql') ?>"><?= isMySQL() ? 'MySQL' : 'PostgreSQL' ?></span>
+                <?= htmlspecialchars($creds['host']) ?>:<?= htmlspecialchars($creds['port']) ?>
+            </div>
         </div>
         <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Ganti tema">☀️</button>
     </div>

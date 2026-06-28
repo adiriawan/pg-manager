@@ -48,14 +48,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['do_import'])) {
                 $insertVals = [];
                 foreach ($colMaps as $csvIdx => $tableCol) {
                     if (!$tableCol || $tableCol === '__skip__') continue;
-                    $insertCols[] = '"' . $tableCol . '"';
+                    $insertCols[] = qi($tableCol);
                     $insertVals[] = isset($row[$csvIdx]) && $row[$csvIdx] !== '' ? $row[$csvIdx] : null;
                 }
                 if (!$insertCols) continue;
 
                 $ph  = implode(',', array_fill(0, count($insertCols), '?'));
-                $sql = 'INSERT INTO "' . $schema . '"."' . $targetTable . '" (' . implode(',', $insertCols) . ') VALUES (' . $ph . ')';
-                if ($onConflict === 'skip')  $sql .= ' ON CONFLICT DO NOTHING';
+                if ($onConflict === 'skip') {
+                    if (isMySQL()) {
+                        $sql = 'INSERT IGNORE INTO ' . qualifiedTable($schema, $targetTable) . ' (' . implode(',', $insertCols) . ') VALUES (' . $ph . ')';
+                    } else {
+                        $sql = 'INSERT INTO ' . qualifiedTable($schema, $targetTable) . ' (' . implode(',', $insertCols) . ') VALUES (' . $ph . ') ON CONFLICT DO NOTHING';
+                    }
+                } else {
+                    $sql = 'INSERT INTO ' . qualifiedTable($schema, $targetTable) . ' (' . implode(',', $insertCols) . ') VALUES (' . $ph . ')';
+                }
 
                 try {
                     $st = $pdo->prepare($sql);

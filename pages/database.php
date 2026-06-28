@@ -7,37 +7,57 @@ $tableStats = [];
 
 try {
     $dbVersion = $pdo->query("SELECT version()")->fetchColumn();
-    $dbSize    = $pdo->prepare("SELECT pg_size_pretty(pg_database_size(?)) as size")->execute([$creds['dbname']]) ? null : null;
-    $stmt = $pdo->prepare("SELECT pg_size_pretty(pg_database_size(?)) as size");
-    $stmt->execute([$creds['dbname']]);
-    $dbSize = $stmt->fetchColumn();
+    $sysFilter = "'" . implode("','", systemSchemas()) . "'";
 
-    // Stats per tabel
-    $stmt = $pdo->prepare("
-        SELECT
-            t.table_schema,
-            t.table_name,
-            pg_size_pretty(pg_total_relation_size('\"' || t.table_schema || '\".\"' || t.table_name || '\"')) as total_size,
-            pg_size_pretty(pg_relation_size('\"' || t.table_schema || '\".\"' || t.table_name || '\"')) as data_size,
-            s.n_live_tup as row_estimate,
-            s.last_autovacuum,
-            s.last_autoanalyze
-        FROM information_schema.tables t
-        LEFT JOIN pg_stat_user_tables s ON s.schemaname = t.table_schema AND s.relname = t.table_name
-        WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-            AND t.table_type = 'BASE TABLE'
-        ORDER BY pg_total_relation_size('\"' || t.table_schema || '\".\"' || t.table_name || '\"') DESC NULLS LAST
-        LIMIT 50
-    ");
-    $stmt->execute();
-    $tableStats = $stmt->fetchAll();
+    if (isMySQL()) {
+        $stmt = $pdo->prepare("SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2)
+            FROM information_schema.tables WHERE table_schema = ?");
+        $stmt->execute([$creds['dbname']]);
+        $mb = $stmt->fetchColumn();
+        $dbSize = ($mb !== null ? $mb : '0') . ' MB';
 
-    // Koneksi aktif
-    $dbStats['connections'] = $pdo->query("SELECT count(*) FROM pg_stat_activity WHERE state = 'active'")->fetchColumn();
-    $dbStats['total_connections'] = $pdo->query("SELECT count(*) FROM pg_stat_activity")->fetchColumn();
-    $dbStats['table_count'] = $pdo->query("SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema','pg_toast') AND table_type = 'BASE TABLE'")->fetchColumn();
-    $dbStats['view_count'] = $pdo->query("SELECT count(*) FROM information_schema.views WHERE table_schema NOT IN ('pg_catalog','information_schema','pg_toast')")->fetchColumn();
+        $stmt = $pdo->prepare("SELECT table_schema, table_name,
+            table_rows as row_estimate,
+            ROUND(data_length / 1024, 1) as data_size,
+            ROUND((data_length + index_length) / 1024, 1) as total_size,
+            update_time as last_autovacuum
+            FROM information_schema.tables
+            WHERE table_schema NOT IN ($sysFilter) AND table_type = 'BASE TABLE'
+            ORDER BY (data_length + index_length) DESC LIMIT 50");
+        $stmt->execute();
+        $tableStats = array_map(function($r) {
+            $r['data_size']  = $r['data_size']  !== null ? $r['data_size']  . ' KB' : '—';
+            $r['total_size'] = $r['total_size']  !== null ? $r['total_size'] . ' KB' : '—';
+            return $r;
+        }, $stmt->fetchAll());
 
+        $dbStats['connections']       = $pdo->query("SELECT count(*) FROM information_schema.processlist WHERE command != 'Sleep'")->fetchColumn();
+        $dbStats['total_connections'] = $pdo->query("SELECT count(*) FROM information_schema.processlist")->fetchColumn();
+        $dbStats['table_count']       = $pdo->query("SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ($sysFilter) AND table_type='BASE TABLE'")->fetchColumn();
+        $dbStats['view_count']        = $pdo->query("SELECT count(*) FROM information_schema.views WHERE table_schema NOT IN ($sysFilter)")->fetchColumn();
+    } else {
+        $stmt = $pdo->prepare("SELECT pg_size_pretty(pg_database_size(?))");
+        $stmt->execute([$creds['dbname']]);
+        $dbSize = $stmt->fetchColumn();
+
+        $stmt = $pdo->prepare("
+            SELECT t.table_schema, t.table_name,
+                pg_size_pretty(pg_total_relation_size('\"'||t.table_schema||'\".\"'||t.table_name||'\"')) as total_size,
+                pg_size_pretty(pg_relation_size('\"'||t.table_schema||'\".\"'||t.table_name||'\"')) as data_size,
+                s.n_live_tup as row_estimate, s.last_autovacuum, s.last_autoanalyze
+            FROM information_schema.tables t
+            LEFT JOIN pg_stat_user_tables s ON s.schemaname=t.table_schema AND s.relname=t.table_name
+            WHERE t.table_schema NOT IN ($sysFilter) AND t.table_type='BASE TABLE'
+            ORDER BY pg_total_relation_size('\"'||t.table_schema||'\".\"'||t.table_name||'\"') DESC NULLS LAST
+            LIMIT 50");
+        $stmt->execute();
+        $tableStats = $stmt->fetchAll();
+
+        $dbStats['connections']       = $pdo->query("SELECT count(*) FROM pg_stat_activity WHERE state='active'")->fetchColumn();
+        $dbStats['total_connections'] = $pdo->query("SELECT count(*) FROM pg_stat_activity")->fetchColumn();
+        $dbStats['table_count']       = $pdo->query("SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ($sysFilter) AND table_type='BASE TABLE'")->fetchColumn();
+        $dbStats['view_count']        = $pdo->query("SELECT count(*) FROM information_schema.views WHERE table_schema NOT IN ($sysFilter)")->fetchColumn();
+    }
 } catch (Exception $e) {}
 
 // Handle create table
@@ -57,10 +77,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_table'])) {
             $colType = $colTypes[$i] ?? 'text';
             $nullable = isset($colNulls[$i]) ? '' : 'NOT NULL';
             $pk = isset($colPks[$i]) ? 'PRIMARY KEY' : '';
-            $colDefs[] = "\"$colName\" $colType $nullable $pk";
+            // MySQL AUTO_INCREMENT untuk tipe serial
+        if (isMySQL() && in_array($colType, ['bigserial','serial'])) {
+            $colType = $colType === 'bigserial' ? 'BIGINT AUTO_INCREMENT' : 'INT AUTO_INCREMENT';
+        }
+        $colDefs[] = qi($colName) . " $colType $nullable $pk";
         }
         if ($tableName && $colDefs) {
-            $sql = "CREATE TABLE \"$newSchema\".\"$tableName\" (" . implode(', ', $colDefs) . ")";
+            $sql = "CREATE TABLE " . qualifiedTable($newSchema, $tableName) . " (" . implode(', ', $colDefs) . ")";
             $pdo->exec($sql);
             $_SESSION['flash_message'] = "Tabel $newSchema.$tableName berhasil dibuat.";
             header('Location: app.php?page=table-editor&schema=' . urlencode($newSchema) . '&table=' . urlencode($tableName));

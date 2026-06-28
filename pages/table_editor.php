@@ -9,7 +9,7 @@ if (isset($_GET['export']) && $table) {
     $exportSchema = $schema;
     $exportTable  = $table;
     try {
-        $rows = $pdo->query('SELECT * FROM "' . $exportSchema . '"."' . $exportTable . '"')->fetchAll();
+        $rows = $pdo->query('SELECT * FROM ' . qualifiedTable($exportSchema, $exportTable))->fetchAll();
         $safeName = preg_replace('/[^a-zA-Z0-9_]/', '_', $exportTable);
         if ($fmt === 'json') {
             header('Content-Type: application/json');
@@ -66,13 +66,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $table) {
             $validVals = [];
             foreach ($cols as $i => $col) {
                 if ($col !== '' && isset($vals[$i])) {
-                    $validCols[] = '"' . $col . '"';
+                    $validCols[] = qi($col);
                     $validVals[] = $vals[$i] === '' ? null : $vals[$i];
                 }
             }
             if ($validCols) {
                 $placeholders = implode(',', array_fill(0, count($validCols), '?'));
-                $sql = 'INSERT INTO "' . $schema . '"."' . $table . '" (' . implode(',', $validCols) . ') VALUES (' . $placeholders . ')';
+                $sql = 'INSERT INTO ' . qualifiedTable($schema, $table) . ' (' . implode(',', $validCols) . ') VALUES (' . $placeholders . ')';
                 $pdo->prepare($sql)->execute($validVals);
                 $message = 'Baris berhasil ditambahkan.';
             }
@@ -82,7 +82,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $table) {
             $pkCol = $_POST['pk_col'] ?? null;
             $pkVal = $_POST['pk_val'] ?? null;
             if ($pkCol && $pkVal !== null) {
-                $sql = 'DELETE FROM "' . $schema . '"."' . $table . '" WHERE "' . $pkCol . '" = ?';
+                $sql = 'DELETE FROM ' . qualifiedTable($schema, $table) . ' WHERE ' . qi($pkCol) . ' = ?';
                 $pdo->prepare($sql)->execute([$pkVal]);
                 $message = 'Baris berhasil dihapus.';
             }
@@ -94,7 +94,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $table) {
             $col    = $_POST['upd_col'] ?? null;
             $val    = $_POST['upd_val'] ?? null;
             if ($pkCol && $pkVal !== null && $col) {
-                $sql = 'UPDATE "' . $schema . '"."' . $table . '" SET "' . $col . '" = ? WHERE "' . $pkCol . '" = ?';
+                $sql = 'UPDATE ' . qualifiedTable($schema, $table) . ' SET ' . qi($col) . ' = ? WHERE ' . qi($pkCol) . ' = ?';
                 $pdo->prepare($sql)->execute([$val === '' ? null : $val, $pkVal]);
                 $message = 'Data berhasil diperbarui.';
             }
@@ -105,20 +105,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $table) {
             $pkVals    = json_decode($_POST['pk_vals'] ?? '[]', true) ?: [];
             if ($pkColPost && $pkVals) {
                 $placeholders = implode(',', array_fill(0, count($pkVals), '?'));
-                $sql = 'DELETE FROM "' . $schema . '"."' . $table . '" WHERE "' . $pkColPost . '" IN (' . $placeholders . ')';
+                $sql = 'DELETE FROM ' . qualifiedTable($schema, $table) . ' WHERE ' . qi($pkColPost) . ' IN (' . $placeholders . ')';
                 $pdo->prepare($sql)->execute($pkVals);
                 $message = count($pkVals) . ' baris berhasil dihapus.';
             }
         }
 
         if ($postAction === 'truncate') {
-            // BUG-05 FIX: Hapus CASCADE — biarkan PostgreSQL error jika ada FK child
-            $pdo->exec('TRUNCATE TABLE "' . $schema . '"."' . $table . '" RESTART IDENTITY');
+            $pdo->exec(truncateSql($schema, $table));
             $message = 'Tabel berhasil dikosongkan.';
         }
 
         if ($postAction === 'drop') {
-            $pdo->exec('DROP TABLE "' . $schema . '"."' . $table . '" CASCADE');
+            $cascade = isPgSQL() ? ' CASCADE' : '';
+            $pdo->exec('DROP TABLE ' . qualifiedTable($schema, $table) . $cascade);
             header('Location: app.php?page=table-editor&schema=' . urlencode($schema));
             exit;
         }
@@ -165,20 +165,9 @@ if (!$table): ?>
 // Ambil kolom
 $columns = [];
 try {
-    $stmt = $pdo->prepare("
-        SELECT c.column_name, c.data_type, c.is_nullable, c.column_default,
-               CASE WHEN pk.column_name IS NOT NULL THEN 'YES' ELSE 'NO' END as is_primary
-        FROM information_schema.columns c
-        LEFT JOIN (
-            SELECT ku.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage ku ON tc.constraint_name = ku.constraint_name AND tc.table_schema = ku.table_schema
-            WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = ? AND tc.table_name = ?
-        ) pk ON c.column_name = pk.column_name
-        WHERE c.table_schema = ? AND c.table_name = ?
-        ORDER BY c.ordinal_position
-    ");
-    $stmt->execute([$schema, $table, $schema, $table]);
+    [$colSql, $colParams] = columnsInfoQuery($schema, $table);
+    $stmt = $pdo->prepare($colSql);
+    $stmt->execute($colParams);
     $columns = $stmt->fetchAll();
 } catch (Exception $e) {}
 
@@ -206,10 +195,12 @@ $filterOps    = $_GET['filter_op']    ?? [];
 $filterVals   = $_GET['filter_val']   ?? [];
 $filterLogics = $_GET['filter_logic'] ?? [];  // AND / OR antar kondisi
 
-// Operator yang diizinkan (whitelist)
+// Operator yang diizinkan (whitelist) — disesuaikan per driver
+$likeOp    = isMySQL() ? 'LIKE ?' : 'ILIKE ?';
+$notLikeOp = isMySQL() ? 'NOT LIKE ?' : 'NOT ILIKE ?';
 $allowedOps = [
-    'ilike'        => 'ILIKE ?',
-    'not_ilike'    => 'NOT ILIKE ?',
+    'ilike'        => $likeOp,
+    'not_ilike'    => $notLikeOp,
     'eq'           => '= ?',
     'neq'          => '!= ?',
     'gt'           => '> ?',
@@ -218,8 +209,8 @@ $allowedOps = [
     'lte'          => '<= ?',
     'is_null'      => 'IS NULL',
     'is_not_null'  => 'IS NOT NULL',
-    'starts_with'  => 'ILIKE ?',
-    'ends_with'    => 'ILIKE ?',
+    'starts_with'  => $likeOp,
+    'ends_with'    => $likeOp,
     'in'           => 'IN (?)',   // diproses manual
 ];
 
@@ -241,7 +232,7 @@ foreach ($filterCols as $i => $fcol) {
 
     $activeFilters[] = ['col' => $fcol, 'op' => $fop, 'val' => $fval, 'logic' => $flog];
 
-    $colExpr = '"' . $fcol . '"';
+    $colExpr = qi($fcol);
     // Operator tanpa nilai
     if (in_array($fop, ['is_null', 'is_not_null'])) {
         $conditions[] = [$flog, "$colExpr " . ($fop === 'is_null' ? 'IS NULL' : 'IS NOT NULL')];
@@ -253,7 +244,7 @@ foreach ($filterCols as $i => $fcol) {
         $inVals = array_filter($inVals, fn($v) => $v !== '');
         if (!$inVals) continue;
         $placeholders = implode(',', array_fill(0, count($inVals), '?'));
-        $conditions[] = [$flog, "$colExpr::text IN ($placeholders)"];
+        $conditions[] = [$flog, castText($colExpr) . " IN ($placeholders)"];
         foreach ($inVals as $iv) $filterParams[] = $iv;
         continue;
     }
@@ -264,7 +255,7 @@ foreach ($filterCols as $i => $fcol) {
     elseif ($fop === 'ends_with')   $paramVal = '%' . $fval;
 
     $sqlOp = $allowedOps[$fop];
-    $conditions[] = [$flog, "$colExpr::text $sqlOp"];
+    $conditions[] = [$flog, castText($colExpr) . " $sqlOp"];
     $filterParams[] = $paramVal;
 }
 
@@ -278,7 +269,7 @@ $allConditions = [];
 if ($search && $columns) {
     $sc = [];
     foreach ($columns as $col) {
-        $sc[] = '"' . $col['column_name'] . '"::text ILIKE ?';
+        $sc[] = ilike(castText(qi($col['column_name'])));
         $searchParams[] = '%' . $search . '%';
     }
     $allConditions[] = '(' . implode(' OR ', $sc) . ')';
@@ -305,13 +296,14 @@ $rows      = [];
 $queryError = null;
 
 try {
-    $countSql  = 'SELECT COUNT(*) FROM "' . $schema . '"."' . $table . '" ' . $whereClause;
+    $qtbl    = qualifiedTable($schema, $table);
+    $countSql = 'SELECT COUNT(*) FROM ' . $qtbl . ' ' . $whereClause;
     $countStmt = $pdo->prepare($countSql);
     $countStmt->execute($allParams);
     $totalRows = (int)$countStmt->fetchColumn();
 
-    $orderBy = $sortCol ? '"' . $sortCol . '" ' . $sortDir : '1';
-    $dataSql  = 'SELECT * FROM "' . $schema . '"."' . $table . '" ' . $whereClause
+    $orderBy = $sortCol ? qi($sortCol) . ' ' . $sortDir : '1';
+    $dataSql  = 'SELECT * FROM ' . $qtbl . ' ' . $whereClause
               . ' ORDER BY ' . $orderBy
               . ' LIMIT ' . $perPage . ' OFFSET ' . $offset;
     $dataStmt = $pdo->prepare($dataSql);

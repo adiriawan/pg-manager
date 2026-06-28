@@ -9,33 +9,52 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
-$creds = [
-    'host'     => trim($_POST['host'] ?? 'localhost'),
-    'port'     => trim($_POST['port'] ?? '5432'),
-    'user'     => trim($_POST['user'] ?? 'postgres'),
-    'password' => $_POST['password'] ?? '',
-    'dbname'   => 'postgres', // koneksi awal ke postgres untuk listing
-];
+$driver = in_array($_POST['driver'] ?? '', ['pgsql','mysql']) ? $_POST['driver'] : 'pgsql';
+// Simpan sementara ke session agar fungsi helper bisa digunakan
+$_SESSION['db_creds'] = ['driver' => $driver];
 
-try {
-    $pdo = getConnection($creds);
-    $stmt = $pdo->query("
-        SELECT datname FROM pg_database
-        WHERE datistemplate = false
-        ORDER BY datname
-    ");
-    $databases = $stmt->fetchAll(PDO::FETCH_COLUMN);
-    echo json_encode(['databases' => $databases]);
-} catch (Exception $e) {
-    // Coba dbname = template1 sebagai fallback
+$host     = trim($_POST['host'] ?? 'localhost');
+$port     = trim($_POST['port'] ?? ($driver === 'mysql' ? '3306' : '5432'));
+$user     = trim($_POST['user'] ?? ($driver === 'mysql' ? 'root' : 'postgres'));
+$password = $_POST['password'] ?? '';
+
+if ($driver === 'mysql') {
+    // MySQL: konek ke information_schema untuk list databases
+    $creds = ['driver'=>'mysql','host'=>$host,'port'=>$port,'user'=>$user,'password'=>$password,'dbname'=>'information_schema'];
     try {
-        $creds['dbname'] = 'template1';
+        $pdo = getConnection($creds);
+        $stmt = $pdo->query("SELECT schema_name FROM information_schema.schemata
+            WHERE schema_name NOT IN ('mysql','information_schema','performance_schema','sys')
+            ORDER BY schema_name");
+        $databases = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        // Jika kosong (user tidak punya db lain), tampilkan semua
+        if (empty($databases)) {
+            $stmt = $pdo->query("SELECT schema_name FROM information_schema.schemata ORDER BY schema_name");
+            $databases = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        }
+        echo json_encode(['databases' => $databases]);
+    } catch (Exception $e) {
+        http_response_code(400);
+        echo json_encode(['error' => $e->getMessage()]);
+    }
+} else {
+    // PostgreSQL: konek ke postgres untuk list databases
+    $creds = ['driver'=>'pgsql','host'=>$host,'port'=>$port,'user'=>$user,'password'=>$password,'dbname'=>'postgres'];
+    try {
         $pdo = getConnection($creds);
         $stmt = $pdo->query("SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname");
         $databases = $stmt->fetchAll(PDO::FETCH_COLUMN);
         echo json_encode(['databases' => $databases]);
-    } catch (Exception $e2) {
-        http_response_code(400);
-        echo json_encode(['error' => $e->getMessage()]);
+    } catch (Exception $e) {
+        try {
+            $creds['dbname'] = 'template1';
+            $pdo = getConnection($creds);
+            $stmt = $pdo->query("SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname");
+            $databases = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            echo json_encode(['databases' => $databases]);
+        } catch (Exception $e2) {
+            http_response_code(400);
+            echo json_encode(['error' => $e->getMessage()]);
+        }
     }
 }

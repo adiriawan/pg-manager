@@ -1,8 +1,10 @@
 <?php
-define('PG_DUMP',    '/opt/homebrew/bin/pg_dump');
-define('PG_RESTORE', '/opt/homebrew/bin/pg_restore');
-define('PSQL',       '/opt/homebrew/bin/psql');
-define('BACKUP_DIR', __DIR__ . '/../backups');
+if (!defined('PG_DUMP'))    define('PG_DUMP',    '/opt/homebrew/bin/pg_dump');
+if (!defined('PG_RESTORE')) define('PG_RESTORE', '/opt/homebrew/bin/pg_restore');
+if (!defined('PSQL'))       define('PSQL',       '/opt/homebrew/bin/psql');
+if (!defined('MYSQL_DUMP')) define('MYSQL_DUMP', '/opt/homebrew/bin/mysqldump');
+if (!defined('MYSQL_BIN'))  define('MYSQL_BIN',  '/opt/homebrew/bin/mysql');
+if (!defined('BACKUP_DIR')) define('BACKUP_DIR', __DIR__ . '/../backups');
 
 $flash   = null;
 $flashType = 'success';
@@ -11,49 +13,68 @@ $flashType = 'success';
 // ACTION: Buat backup baru
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['_action'] ?? '') === 'backup') {
-    $format   = $_POST['format']   ?? 'sql';       // sql | custom | tar
+    $format      = $_POST['format']   ?? 'sql';
     $schema_only = isset($_POST['schema_only']);
     $data_only   = isset($_POST['data_only']);
     $tables_sel  = array_filter($_POST['tables'] ?? []);
 
     $dbname   = $creds['dbname'];
     $ts       = date('Ymd_His');
-    $ext      = $format === 'sql' ? 'sql' : ($format === 'custom' ? 'dump' : 'tar');
-    $filename = "{$dbname}_{$ts}.{$ext}";
+    $filename = "{$dbname}_{$ts}.sql";
     $filepath = BACKUP_DIR . '/' . $filename;
 
-    // Bangun env untuk password
-    $env = 'PGPASSWORD=' . escapeshellarg($creds['password']);
+    if (isMySQL()) {
+        // mysqldump
+        $mysqlPwd = $creds['password'] ? '-p' . escapeshellarg($creds['password']) : '';
+        $cmd = MYSQL_DUMP
+            . " -h " . escapeshellarg($creds['host'])
+            . " -P " . escapeshellarg($creds['port'])
+            . " -u " . escapeshellarg($creds['user'])
+            . " " . $mysqlPwd;
 
-    // Bangun perintah pg_dump
-    $cmd = "$env " . PG_DUMP
-        . " -h " . escapeshellarg($creds['host'])
-        . " -p " . escapeshellarg($creds['port'])
-        . " -U " . escapeshellarg($creds['user'])
-        . " -d " . escapeshellarg($dbname);
+        if ($schema_only) $cmd .= ' --no-data';
+        elseif ($data_only) $cmd .= ' --no-create-info';
 
-    if ($format === 'custom') $cmd .= ' -Fc';
-    elseif ($format === 'tar') $cmd .= ' -Ft';
-    else $cmd .= ' -Fp';
+        if ($tables_sel) {
+            $cmd .= ' ' . escapeshellarg($dbname);
+            foreach ($tables_sel as $t) $cmd .= ' ' . escapeshellarg($t);
+        } else {
+            $cmd .= ' ' . escapeshellarg($dbname);
+        }
+        $cmd .= ' > ' . escapeshellarg($filepath) . ' 2>&1';
+    } else {
+        // pg_dump
+        $ext      = $format === 'custom' ? 'dump' : ($format === 'tar' ? 'tar' : 'sql');
+        $filename = "{$dbname}_{$ts}.{$ext}";
+        $filepath = BACKUP_DIR . '/' . $filename;
 
-    if ($schema_only) $cmd .= ' --schema-only';
-    elseif ($data_only) $cmd .= ' --data-only';
+        $env = 'PGPASSWORD=' . escapeshellarg($creds['password']);
+        $cmd = "$env " . PG_DUMP
+            . " -h " . escapeshellarg($creds['host'])
+            . " -p " . escapeshellarg($creds['port'])
+            . " -U " . escapeshellarg($creds['user'])
+            . " -d " . escapeshellarg($dbname);
 
-    foreach ($tables_sel as $t) {
-        $cmd .= ' -t ' . escapeshellarg($schema . '.' . $t);
+        if ($format === 'custom') $cmd .= ' -Fc';
+        elseif ($format === 'tar') $cmd .= ' -Ft';
+        else $cmd .= ' -Fp';
+
+        if ($schema_only) $cmd .= ' --schema-only';
+        elseif ($data_only) $cmd .= ' --data-only';
+
+        foreach ($tables_sel as $t) {
+            $cmd .= ' -t ' . escapeshellarg($schema . '.' . $t);
+        }
+        $cmd .= ' > ' . escapeshellarg($filepath) . ' 2>&1';
     }
 
-    $cmd .= ' > ' . escapeshellarg($filepath) . ' 2>&1';
-
-    $output = null;
-    $retval = null;
+    $output = null; $retval = null;
     exec($cmd, $output, $retval);
 
     if ($retval === 0 && file_exists($filepath) && filesize($filepath) > 0) {
         $_SESSION['flash'] = ['type' => 'success', 'msg' => "Backup <strong>$filename</strong> berhasil dibuat (" . formatBytes(filesize($filepath)) . ")."];
     } else {
         $errMsg = implode("\n", $output);
-        // Hapus file kosong jika ada
         if (file_exists($filepath)) unlink($filepath);
         $_SESSION['flash'] = ['type' => 'error', 'msg' => "Backup gagal: " . htmlspecialchars($errMsg ?: 'Unknown error')];
     }

@@ -27,16 +27,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['_action'])) {
     }
 }
 
-// Ambil tipe data PostgreSQL yang umum
-$pgTypes = [
-    'integer','bigint','smallint','serial','bigserial',
-    'numeric','decimal','real','double precision',
-    'varchar','character varying','text','char','character',
-    'boolean',
-    'date','time','timestamp','timestamptz',
-    'timestamp without time zone','timestamp with time zone',
-    'uuid','json','jsonb','bytea',
-];
+// Tipe data sesuai driver
+if (isMySQL()) {
+    $pgTypes = [
+        'INT','BIGINT','SMALLINT','TINYINT','INT AUTO_INCREMENT','BIGINT AUTO_INCREMENT',
+        'DECIMAL','FLOAT','DOUBLE',
+        'VARCHAR(255)','TEXT','MEDIUMTEXT','LONGTEXT','CHAR(10)',
+        'TINYINT(1)',
+        'DATE','TIME','DATETIME','TIMESTAMP',
+        'JSON','BLOB',
+    ];
+} else {
+    $pgTypes = [
+        'integer','bigint','smallint','serial','bigserial',
+        'numeric','decimal','real','double precision',
+        'varchar','character varying','text','char','character',
+        'boolean',
+        'date','time','timestamp','timestamptz',
+        'timestamp without time zone','timestamp with time zone',
+        'uuid','json','jsonb','bytea',
+    ];
+}
 
 // Ambil tabel yang sudah ada (untuk deteksi nama duplikat)
 $existingTables = [];
@@ -140,6 +151,15 @@ try {
 const DS_PG_TYPES    = <?= json_encode($pgTypes) ?>;
 const DS_EXISTING    = <?= json_encode($existingTables) ?>;
 const DS_SCHEMA      = '<?= addslashes($schema) ?>';
+const DS_DRIVER      = '<?= isMySQL() ? 'mysql' : 'pgsql' ?>';
+
+function dsQi(name) {
+    if (DS_DRIVER === 'mysql') return '`' + name.replace(/`/g, '``') + '`';
+    return '"' + name.replace(/"/g, '""') + '"';
+}
+function dsQTable(schema, table) {
+    return dsQi(schema) + '.' + dsQi(table);
+}
 
 const DS_COL_H  = 34;   // tinggi per baris kolom
 const DS_HDR_H  = 40;   // tinggi header tabel
@@ -180,7 +200,7 @@ function dsAddTable(x, y) {
         name: 'tabel_' + Object.keys(dsTables).length,
         x: px, y: py,
         columns: [
-            { id: 'col_'+(dsNextId++), name: 'id', type: 'serial', pk: true, notnull: true, unique: false, default: '' }
+            { id: 'col_'+(dsNextId++), name: 'id', type: DS_DRIVER === 'mysql' ? 'INT AUTO_INCREMENT' : 'serial', pk: true, notnull: true, unique: false, default: '' }
         ]
     };
     dsRender();
@@ -668,7 +688,7 @@ function dsGenerateSql() {
     // CREATE TABLE
     Object.entries(dsTables).forEach(([id, tbl]) => {
         const colDefs = tbl.columns.map(col => {
-            let def = `  "${col.name}" ${col.type}`;
+            let def = `  ${dsQi(col.name)} ${col.type}`;
             if (col.pk)      def += ' PRIMARY KEY';
             else {
                 if (col.notnull) def += ' NOT NULL';
@@ -677,7 +697,7 @@ function dsGenerateSql() {
             if (col.default) def += ` DEFAULT ${col.default}`;
             return def;
         });
-        sqls.push(`CREATE TABLE "${DS_SCHEMA}"."${tbl.name}" (\n${colDefs.join(',\n')}\n);`);
+        sqls.push(`CREATE TABLE ${dsQTable(DS_SCHEMA, tbl.name)} (\n${colDefs.join(',\n')}\n);`);
     });
 
     // ALTER TABLE ADD CONSTRAINT FK
@@ -690,10 +710,10 @@ function dsGenerateSql() {
         if (!fromCol || !toCol) return;
         const cname = `fk_${fromTbl.name}_${fromCol.name}`;
         sqls.push(
-            `ALTER TABLE "${DS_SCHEMA}"."${fromTbl.name}"\n` +
-            `  ADD CONSTRAINT "${cname}"\n` +
-            `  FOREIGN KEY ("${fromCol.name}")\n` +
-            `  REFERENCES "${DS_SCHEMA}"."${toTbl.name}" ("${toCol.name}");`
+            `ALTER TABLE ${dsQTable(DS_SCHEMA, fromTbl.name)}\n` +
+            `  ADD CONSTRAINT ${dsQi(cname)}\n` +
+            `  FOREIGN KEY (${dsQi(fromCol.name)})\n` +
+            `  REFERENCES ${dsQTable(DS_SCHEMA, toTbl.name)} (${dsQi(toCol.name)});`
         );
     });
 

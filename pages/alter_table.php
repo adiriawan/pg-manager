@@ -23,76 +23,96 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     try {
         // Rename kolom
+        $qtbl = qualifiedTable($schema, $table);
+
         if ($op === 'rename_col') {
             $oldName = $_POST['old_col'] ?? '';
             $newName = preg_replace('/[^a-zA-Z0-9_]/', '', $_POST['new_col'] ?? '');
-            // BUG-03 FIX: validasi oldName harus kolom yang benar-benar ada
             if ($oldName && $newName && in_array($oldName, $validColNames)) {
-                $pdo->exec("ALTER TABLE \"$schema\".\"$table\" RENAME COLUMN \"$oldName\" TO \"$newName\"");
-                // BUG-11 FIX: escape nilai user di flash message
+                if (isMySQL()) {
+                    // MySQL perlu tipe data saat rename — ambil dari information_schema
+                    $typeStmt = $pdo->prepare("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND COLUMN_NAME=?");
+                    $typeStmt->execute([$schema, $table, $oldName]);
+                    $colType = $typeStmt->fetchColumn() ?: 'text';
+                    $pdo->exec("ALTER TABLE $qtbl CHANGE " . qi($oldName) . " " . qi($newName) . " $colType");
+                } else {
+                    $pdo->exec("ALTER TABLE $qtbl RENAME COLUMN " . qi($oldName) . " TO " . qi($newName));
+                }
                 $flash = "Kolom <strong>" . htmlspecialchars($oldName) . "</strong> berhasil diubah menjadi <strong>" . htmlspecialchars($newName) . "</strong>.";
             }
         }
-        // Ubah tipe data
         if ($op === 'change_type') {
             $col  = $_POST['col_name'] ?? '';
             $type = $_POST['new_type'] ?? '';
-            // BUG-03 FIX: validasi col dan whitelist type
             if ($col && $type && in_array($col, $validColNames) && in_array($type, $allowedTypes)) {
-                $pdo->exec("ALTER TABLE \"$schema\".\"$table\" ALTER COLUMN \"$col\" TYPE $type USING \"$col\"::$type");
+                if (isMySQL()) {
+                    $pdo->exec("ALTER TABLE $qtbl MODIFY COLUMN " . qi($col) . " $type");
+                } else {
+                    $pdo->exec("ALTER TABLE $qtbl ALTER COLUMN " . qi($col) . " TYPE $type USING " . qi($col) . "::$type");
+                }
                 $flash = "Tipe kolom <strong>" . htmlspecialchars($col) . "</strong> berhasil diubah ke <strong>" . htmlspecialchars($type) . "</strong>.";
             }
         }
-        // Set NOT NULL / NULL
         if ($op === 'set_nullable') {
-            $col      = $_POST['col_name']  ?? '';
-            $nullable = $_POST['nullable']  ?? 'YES';
+            $col      = $_POST['col_name'] ?? '';
+            $nullable = $_POST['nullable'] ?? 'YES';
             if ($col && in_array($col, $validColNames)) {
-                $kw = $nullable === 'YES' ? 'DROP NOT NULL' : 'SET NOT NULL';
-                $pdo->exec("ALTER TABLE \"$schema\".\"$table\" ALTER COLUMN \"$col\" $kw");
+                if (isMySQL()) {
+                    $typeStmt = $pdo->prepare("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND COLUMN_NAME=?");
+                    $typeStmt->execute([$schema, $table, $col]);
+                    $colType = $typeStmt->fetchColumn() ?: 'text';
+                    $nullKw  = $nullable === 'YES' ? 'NULL' : 'NOT NULL';
+                    $pdo->exec("ALTER TABLE $qtbl MODIFY COLUMN " . qi($col) . " $colType $nullKw");
+                } else {
+                    $kw = $nullable === 'YES' ? 'DROP NOT NULL' : 'SET NOT NULL';
+                    $pdo->exec("ALTER TABLE $qtbl ALTER COLUMN " . qi($col) . " $kw");
+                }
                 $flash = "Kolom <strong>" . htmlspecialchars($col) . "</strong> berhasil diperbarui.";
             }
         }
-        // Set DEFAULT
         if ($op === 'set_default') {
             $col = $_POST['col_name'] ?? '';
             $def = $_POST['default_val'] ?? '';
             if ($col && in_array($col, $validColNames)) {
                 if ($def === '') {
-                    $pdo->exec("ALTER TABLE \"$schema\".\"$table\" ALTER COLUMN \"$col\" DROP DEFAULT");
+                    $pdo->exec("ALTER TABLE $qtbl ALTER COLUMN " . qi($col) . " DROP DEFAULT");
                 } else {
-                    $pdo->exec("ALTER TABLE \"$schema\".\"$table\" ALTER COLUMN \"$col\" SET DEFAULT " . $pdo->quote($def));
+                    $pdo->exec("ALTER TABLE $qtbl ALTER COLUMN " . qi($col) . " SET DEFAULT " . $pdo->quote($def));
                 }
                 $flash = "Default kolom <strong>" . htmlspecialchars($col) . "</strong> berhasil diperbarui.";
             }
         }
-        // Tambah kolom baru
         if ($op === 'add_col') {
-            $colName  = preg_replace('/[^a-zA-Z0-9_]/', '', $_POST['add_col_name'] ?? '');
-            $colType  = $_POST['add_col_type'] ?? 'text';
-            // BUG-03 FIX: whitelist tipe data
+            $colName = preg_replace('/[^a-zA-Z0-9_]/', '', $_POST['add_col_name'] ?? '');
+            $colType = $_POST['add_col_type'] ?? 'text';
             if (!in_array($colType, $allowedTypes)) $colType = 'text';
+            // MySQL: konversi tipe serial
+            if (isMySQL() && $colType === 'bigserial') $colType = 'BIGINT AUTO_INCREMENT';
+            if (isMySQL() && $colType === 'serial')    $colType = 'INT AUTO_INCREMENT';
             $nullable  = isset($_POST['add_nullable']) ? '' : 'NOT NULL';
-            $default   = trim($_POST['add_default']  ?? '');
+            $default   = trim($_POST['add_default'] ?? '');
             $defClause = $default ? "DEFAULT " . $pdo->quote($default) : '';
             if ($colName) {
-                $pdo->exec("ALTER TABLE \"$schema\".\"$table\" ADD COLUMN \"$colName\" $colType $nullable $defClause");
+                $pdo->exec("ALTER TABLE $qtbl ADD COLUMN " . qi($colName) . " $colType $nullable $defClause");
                 $flash = "Kolom <strong>" . htmlspecialchars($colName) . "</strong> berhasil ditambahkan.";
             }
         }
-        // Hapus kolom
         if ($op === 'drop_col') {
             $col = $_POST['drop_col_name'] ?? '';
             if ($col && in_array($col, $validColNames)) {
-                $pdo->exec("ALTER TABLE \"$schema\".\"$table\" DROP COLUMN \"$col\" CASCADE");
+                $cascade = isPgSQL() ? ' CASCADE' : '';
+                $pdo->exec("ALTER TABLE $qtbl DROP COLUMN " . qi($col) . $cascade);
                 $flash = "Kolom <strong>" . htmlspecialchars($col) . "</strong> berhasil dihapus.";
             }
         }
-        // Rename tabel
         if ($op === 'rename_table') {
             $newName = preg_replace('/[^a-zA-Z0-9_]/', '', $_POST['new_table_name'] ?? '');
             if ($newName) {
-                $pdo->exec("ALTER TABLE \"$schema\".\"$table\" RENAME TO \"$newName\"");
+                if (isMySQL()) {
+                    $pdo->exec("RENAME TABLE $qtbl TO " . qi($newName));
+                } else {
+                    $pdo->exec("ALTER TABLE $qtbl RENAME TO " . qi($newName));
+                }
                 $flash = "Tabel berhasil diubah menjadi <strong>" . htmlspecialchars($newName) . "</strong>.";
                 header("Location: app.php?page=alter-table&schema=" . urlencode($schema) . "&table=" . urlencode($newName) . "&flash=" . urlencode("Tabel berhasil direname ke $newName"));
                 exit;
