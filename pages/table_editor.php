@@ -118,7 +118,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $table) {
 
         if ($postAction === 'drop') {
             $cascade = isPgSQL() ? ' CASCADE' : '';
-            $pdo->exec('DROP TABLE ' . qualifiedTable($schema, $table) . $cascade);
+            $pdo->exec('DROP TABLE ' . qualifiedTable($schema, $table) . $cascade);  // SQLite: qualifiedTable = qi(table), no CASCADE needed but harmless
             header('Location: app.php?page=table-editor&schema=' . urlencode($schema));
             exit;
         }
@@ -165,10 +165,7 @@ if (!$table): ?>
 // Ambil kolom
 $columns = [];
 try {
-    [$colSql, $colParams] = columnsInfoQuery($schema, $table);
-    $stmt = $pdo->prepare($colSql);
-    $stmt->execute($colParams);
-    $columns = $stmt->fetchAll();
+    $columns = getColumnsInfo($pdo, $schema, $table);
 } catch (Exception $e) {}
 
 $pkCol = null;
@@ -196,8 +193,8 @@ $filterVals   = $_GET['filter_val']   ?? [];
 $filterLogics = $_GET['filter_logic'] ?? [];  // AND / OR antar kondisi
 
 // Operator yang diizinkan (whitelist) — disesuaikan per driver
-$likeOp    = isMySQL() ? 'LIKE ?' : 'ILIKE ?';
-$notLikeOp = isMySQL() ? 'NOT LIKE ?' : 'NOT ILIKE ?';
+$likeOp    = isPgSQL() ? 'ILIKE ?' : 'LIKE ?';
+$notLikeOp = isPgSQL() ? 'NOT ILIKE ?' : 'NOT LIKE ?';
 $allowedOps = [
     'ilike'        => $likeOp,
     'not_ilike'    => $notLikeOp,

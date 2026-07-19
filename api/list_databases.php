@@ -9,9 +9,22 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
-$driver = in_array($_POST['driver'] ?? '', ['pgsql','mysql']) ? $_POST['driver'] : 'pgsql';
+$driver = in_array($_POST['driver'] ?? '', ['pgsql','mysql','sqlite']) ? $_POST['driver'] : 'pgsql';
 // Simpan sementara ke session agar fungsi helper bisa digunakan
 $_SESSION['db_creds'] = ['driver' => $driver];
+
+// SQLite: tidak perlu list databases — langsung connect ke file
+if ($driver === 'sqlite') {
+    $path = trim($_POST['sqlite_path'] ?? '');
+    if (!$path) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Path file SQLite tidak boleh kosong']);
+    } else {
+        // Validasi: bisa dibuka atau dibuat
+        echo json_encode(['databases' => [basename($path)]]);
+    }
+    exit;
+}
 
 $host     = trim($_POST['host'] ?? 'localhost');
 $port     = trim($_POST['port'] ?? ($driver === 'mysql' ? '3306' : '5432'));

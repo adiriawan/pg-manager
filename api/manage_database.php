@@ -10,6 +10,23 @@ verifyCsrf();
 $action = $_POST['action'] ?? '';
 $dbName = trim($_POST['dbname'] ?? '');
 
+// Untuk SQLite: kembalikan info sederhana
+if (isSQLite()) {
+    $creds = getCredentials();
+    if ($action === 'list') {
+        echo json_encode(['ok' => true, 'databases' => [
+            ['datname' => basename($creds['dbname']), 'size' => '—', 'owner' => '—']
+        ]]);
+    } elseif ($action === 'create') {
+        echo json_encode(['error' => 'Buat database SQLite: buat file .db baru dan hubungkan dari halaman login.']);
+    } elseif ($action === 'drop') {
+        echo json_encode(['error' => 'Drop database SQLite tidak tersedia lewat antarmuka ini.']);
+    } else {
+        echo json_encode(['error' => 'Action tidak didukung untuk SQLite']);
+    }
+    exit;
+}
+
 // Validasi nama database hanya untuk aksi yang membutuhkan nama
 if (in_array($action, ['create','drop'])) {
     if (!preg_match('/^[a-zA-Z][a-zA-Z0-9_\-]{0,62}$/', $dbName)) {

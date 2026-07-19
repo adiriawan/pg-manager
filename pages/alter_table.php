@@ -11,11 +11,15 @@ $flashType = 'success';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verifyCsrf(); // BUG-04 FIX
     $op = $_POST['alter_op'] ?? '';
-    // BUG-03 FIX: Ambil daftar kolom valid lebih awal untuk validasi
-    $validColsStmt = $pdo->prepare("SELECT column_name FROM information_schema.columns
-        WHERE table_schema=? AND table_name=? ORDER BY ordinal_position");
-    $validColsStmt->execute([$schema, $table]);
-    $validColNames = $validColsStmt->fetchAll(PDO::FETCH_COLUMN);
+    // Ambil daftar kolom valid lebih awal untuk validasi
+    if (isSQLite()) {
+        $validColNames = array_column(getColumnsInfo($pdo, $schema, $table), 'column_name');
+    } else {
+        $validColsStmt = $pdo->prepare("SELECT column_name FROM information_schema.columns
+            WHERE table_schema=? AND table_name=? ORDER BY ordinal_position");
+        $validColsStmt->execute([$schema, $table]);
+        $validColNames = $validColsStmt->fetchAll(PDO::FETCH_COLUMN);
+    }
 
     // BUG-03 FIX: Whitelist tipe data yang diizinkan
     $allowedTypes = ['text','varchar(255)','integer','bigint','bigserial','serial','boolean',
@@ -42,44 +46,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
         if ($op === 'change_type') {
-            $col  = $_POST['col_name'] ?? '';
-            $type = $_POST['new_type'] ?? '';
-            if ($col && $type && in_array($col, $validColNames) && in_array($type, $allowedTypes)) {
-                if (isMySQL()) {
-                    $pdo->exec("ALTER TABLE $qtbl MODIFY COLUMN " . qi($col) . " $type");
-                } else {
-                    $pdo->exec("ALTER TABLE $qtbl ALTER COLUMN " . qi($col) . " TYPE $type USING " . qi($col) . "::$type");
+            if (isSQLite()) {
+                $flash = "SQLite tidak mendukung perubahan tipe kolom via ALTER TABLE.";
+                $flashType = 'error';
+            } else {
+                $col  = $_POST['col_name'] ?? '';
+                $type = $_POST['new_type'] ?? '';
+                if ($col && $type && in_array($col, $validColNames) && in_array($type, $allowedTypes)) {
+                    if (isMySQL()) {
+                        $pdo->exec("ALTER TABLE $qtbl MODIFY COLUMN " . qi($col) . " $type");
+                    } else {
+                        $pdo->exec("ALTER TABLE $qtbl ALTER COLUMN " . qi($col) . " TYPE $type USING " . qi($col) . "::$type");
+                    }
+                    $flash = "Tipe kolom <strong>" . htmlspecialchars($col) . "</strong> berhasil diubah ke <strong>" . htmlspecialchars($type) . "</strong>.";
                 }
-                $flash = "Tipe kolom <strong>" . htmlspecialchars($col) . "</strong> berhasil diubah ke <strong>" . htmlspecialchars($type) . "</strong>.";
             }
         }
         if ($op === 'set_nullable') {
-            $col      = $_POST['col_name'] ?? '';
-            $nullable = $_POST['nullable'] ?? 'YES';
-            if ($col && in_array($col, $validColNames)) {
-                if (isMySQL()) {
-                    $typeStmt = $pdo->prepare("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND COLUMN_NAME=?");
-                    $typeStmt->execute([$schema, $table, $col]);
-                    $colType = $typeStmt->fetchColumn() ?: 'text';
-                    $nullKw  = $nullable === 'YES' ? 'NULL' : 'NOT NULL';
-                    $pdo->exec("ALTER TABLE $qtbl MODIFY COLUMN " . qi($col) . " $colType $nullKw");
-                } else {
-                    $kw = $nullable === 'YES' ? 'DROP NOT NULL' : 'SET NOT NULL';
-                    $pdo->exec("ALTER TABLE $qtbl ALTER COLUMN " . qi($col) . " $kw");
+            if (isSQLite()) {
+                $flash = "SQLite tidak mendukung SET/DROP NOT NULL via ALTER TABLE.";
+                $flashType = 'error';
+            } else {
+                $col      = $_POST['col_name'] ?? '';
+                $nullable = $_POST['nullable'] ?? 'YES';
+                if ($col && in_array($col, $validColNames)) {
+                    if (isMySQL()) {
+                        $typeStmt = $pdo->prepare("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND COLUMN_NAME=?");
+                        $typeStmt->execute([$schema, $table, $col]);
+                        $colType = $typeStmt->fetchColumn() ?: 'text';
+                        $nullKw  = $nullable === 'YES' ? 'NULL' : 'NOT NULL';
+                        $pdo->exec("ALTER TABLE $qtbl MODIFY COLUMN " . qi($col) . " $colType $nullKw");
+                    } else {
+                        $kw = $nullable === 'YES' ? 'DROP NOT NULL' : 'SET NOT NULL';
+                        $pdo->exec("ALTER TABLE $qtbl ALTER COLUMN " . qi($col) . " $kw");
+                    }
+                    $flash = "Kolom <strong>" . htmlspecialchars($col) . "</strong> berhasil diperbarui.";
                 }
-                $flash = "Kolom <strong>" . htmlspecialchars($col) . "</strong> berhasil diperbarui.";
             }
         }
         if ($op === 'set_default') {
-            $col = $_POST['col_name'] ?? '';
-            $def = $_POST['default_val'] ?? '';
-            if ($col && in_array($col, $validColNames)) {
-                if ($def === '') {
-                    $pdo->exec("ALTER TABLE $qtbl ALTER COLUMN " . qi($col) . " DROP DEFAULT");
-                } else {
-                    $pdo->exec("ALTER TABLE $qtbl ALTER COLUMN " . qi($col) . " SET DEFAULT " . $pdo->quote($def));
+            if (isSQLite()) {
+                $flash = "SQLite tidak mendukung SET/DROP DEFAULT via ALTER TABLE.";
+                $flashType = 'error';
+            } else {
+                $col = $_POST['col_name'] ?? '';
+                $def = $_POST['default_val'] ?? '';
+                if ($col && in_array($col, $validColNames)) {
+                    if ($def === '') {
+                        $pdo->exec("ALTER TABLE $qtbl ALTER COLUMN " . qi($col) . " DROP DEFAULT");
+                    } else {
+                        $pdo->exec("ALTER TABLE $qtbl ALTER COLUMN " . qi($col) . " SET DEFAULT " . $pdo->quote($def));
+                    }
+                    $flash = "Default kolom <strong>" . htmlspecialchars($col) . "</strong> berhasil diperbarui.";
                 }
-                $flash = "Default kolom <strong>" . htmlspecialchars($col) . "</strong> berhasil diperbarui.";
             }
         }
         if ($op === 'add_col') {
@@ -139,21 +158,7 @@ if (isset($_GET['flash'])) $flash = htmlspecialchars($_GET['flash']);
 // ── Ambil struktur kolom ──────────────────────────────────────
 $columns = [];
 try {
-    $stmt = $pdo->prepare("
-        SELECT c.column_name, c.data_type, c.is_nullable, c.column_default,
-               CASE WHEN pk.column_name IS NOT NULL THEN 'YES' ELSE 'NO' END as is_primary
-        FROM information_schema.columns c
-        LEFT JOIN (
-            SELECT ku.column_name FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage ku
-                ON tc.constraint_name = ku.constraint_name AND tc.table_schema = ku.table_schema
-            WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = ? AND tc.table_name = ?
-        ) pk ON c.column_name = pk.column_name
-        WHERE c.table_schema = ? AND c.table_name = ?
-        ORDER BY c.ordinal_position
-    ");
-    $stmt->execute([$schema, $table, $schema, $table]);
-    $columns = $stmt->fetchAll();
+    $columns = getColumnsInfo($pdo, $schema, $table);
 } catch (Exception $e) {}
 
 $typeOptions = ['text','varchar(255)','integer','bigint','bigserial','serial','boolean',
@@ -194,12 +199,14 @@ $typeOptions = ['text','varchar(255)','integer','bigint','bigserial','serial','b
                 <div style="display:flex;gap:4px;margin-left:auto">
                     <button class="btn btn-outline btn-sm"
                         onclick="openRenameCol('<?= addslashes($col['column_name']) ?>')">Rename</button>
+                    <?php if (!isSQLite()): ?>
                     <button class="btn btn-outline btn-sm"
                         onclick="openChangeType('<?= addslashes($col['column_name']) ?>','<?= addslashes($col['data_type']) ?>')">Tipe</button>
                     <button class="btn btn-outline btn-sm"
                         onclick="openSetDefault('<?= addslashes($col['column_name']) ?>','<?= addslashes($col['column_default'] ?? '') ?>')">Default</button>
                     <button class="btn btn-outline btn-sm"
                         onclick="openNullable('<?= addslashes($col['column_name']) ?>','<?= $col['is_nullable'] ?>')">Nullable</button>
+                    <?php endif; ?>
                     <?php if ($col['is_primary'] !== 'YES'): ?>
                     <button class="btn btn-outline btn-sm btn-danger"
                         onclick="openDropCol('<?= addslashes($col['column_name']) ?>')">Drop</button>

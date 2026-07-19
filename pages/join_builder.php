@@ -2,7 +2,26 @@
 // ── Ambil semua tabel di schema aktif ────────────────────────
 $allTableCols = [];
 try {
-    if (isMySQL()) {
+    if (isSQLite()) {
+        $sqliteTbls = getTablesSQLite($pdo);
+        $sqliteFks  = getForeignKeysSQLite($pdo);
+        $fkColSet   = [];
+        foreach ($sqliteFks as $fk) {
+            $fkColSet[$fk['from_table'] . '.' . $fk['from_column']] = true;
+        }
+        foreach ($sqliteTbls as $tblName) {
+            $cols = getColumnsInfo($pdo, 'main', $tblName);
+            foreach ($cols as $col) {
+                $allTableCols[$tblName][] = [
+                    'table_name'  => $tblName,
+                    'column_name' => $col['column_name'],
+                    'data_type'   => $col['data_type'],
+                    'is_primary'  => $col['is_primary'] === 'YES' ? 1 : 0,
+                    'is_foreign'  => isset($fkColSet[$tblName . '.' . $col['column_name']]) ? 1 : 0,
+                ];
+            }
+        }
+    } elseif (isMySQL()) {
         $stmt = $pdo->prepare("
             SELECT c.table_name, c.column_name, c.data_type,
                    CASE WHEN c.COLUMN_KEY = 'PRI' THEN 1 ELSE 0 END as is_primary,
@@ -15,6 +34,9 @@ try {
             ORDER BY c.table_name, c.ordinal_position
         ");
         $stmt->execute([$schema]);
+        foreach ($stmt->fetchAll() as $row) {
+            $allTableCols[$row['table_name']][] = $row;
+        }
     } else {
         $stmt = $pdo->prepare("
             SELECT c.table_name, c.column_name, c.data_type,
@@ -39,16 +61,26 @@ try {
             ORDER BY c.table_name, c.ordinal_position
         ");
         $stmt->execute([$schema, $schema, $schema]);
-    }
-    foreach ($stmt->fetchAll() as $row) {
-        $allTableCols[$row['table_name']][] = $row;
+        foreach ($stmt->fetchAll() as $row) {
+            $allTableCols[$row['table_name']][] = $row;
+        }
     }
 } catch (Exception $e) {}
 
 // ── Ambil FK otomatis untuk saran relasi ─────────────────────
 $fkSuggestions = [];
 try {
-    if (isMySQL()) {
+    if (isSQLite()) {
+        $rawFks = getForeignKeysSQLite($pdo);
+        foreach ($rawFks as $fk) {
+            $fkSuggestions[] = [
+                'from_table' => $fk['from_table'],
+                'from_col'   => $fk['from_column'],
+                'to_table'   => $fk['to_table'],
+                'to_col'     => $fk['to_column'],
+            ];
+        }
+    } elseif (isMySQL()) {
         $stmt = $pdo->prepare("
             SELECT kcu.TABLE_NAME as from_table, kcu.COLUMN_NAME as from_col,
                    kcu.REFERENCED_TABLE_NAME as to_table, kcu.REFERENCED_COLUMN_NAME as to_col
@@ -56,6 +88,7 @@ try {
             WHERE kcu.TABLE_SCHEMA = ? AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
         ");
         $stmt->execute([$schema]);
+        $fkSuggestions = $stmt->fetchAll();
     } else {
         $stmt = $pdo->prepare("
             SELECT kcu.table_name as from_table, kcu.column_name as from_col,
@@ -68,8 +101,8 @@ try {
             WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = ?
         ");
         $stmt->execute([$schema]);
+        $fkSuggestions = $stmt->fetchAll();
     }
-    $fkSuggestions = $stmt->fetchAll();
 } catch (Exception $e) {}
 
 // ── Eksekusi query JOIN ───────────────────────────────────────

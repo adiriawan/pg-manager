@@ -3,15 +3,26 @@ require_once 'config.php';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     if ($_POST['action'] === 'connect') {
-        $driver = in_array($_POST['driver'] ?? '', ['pgsql','mysql']) ? $_POST['driver'] : 'pgsql';
-        $creds = [
-            'driver'   => $driver,
-            'host'     => trim($_POST['host'] ?? 'localhost'),
-            'port'     => trim($_POST['port'] ?? ($driver === 'mysql' ? '3306' : '5432')),
-            'dbname'   => trim($_POST['dbname'] ?? ($driver === 'mysql' ? 'mysql' : 'postgres')),
-            'user'     => trim($_POST['user'] ?? ($driver === 'mysql' ? 'root' : 'postgres')),
-            'password' => $_POST['password'] ?? '',
-        ];
+        $driver = in_array($_POST['driver'] ?? '', ['pgsql','mysql','sqlite']) ? $_POST['driver'] : 'pgsql';
+        if ($driver === 'sqlite') {
+            $creds = [
+                'driver'   => 'sqlite',
+                'dbname'   => trim($_POST['sqlite_path'] ?? ''),
+                'host'     => '',
+                'port'     => '',
+                'user'     => '',
+                'password' => '',
+            ];
+        } else {
+            $creds = [
+                'driver'   => $driver,
+                'host'     => trim($_POST['host'] ?? 'localhost'),
+                'port'     => trim($_POST['port'] ?? ($driver === 'mysql' ? '3306' : '5432')),
+                'dbname'   => trim($_POST['dbname'] ?? ($driver === 'mysql' ? 'mysql' : 'postgres')),
+                'user'     => trim($_POST['user'] ?? ($driver === 'mysql' ? 'root' : 'postgres')),
+                'password' => $_POST['password'] ?? '',
+            ];
+        }
         tryConnect($creds);
         header('Location: index.php');
         exit;
@@ -66,7 +77,7 @@ unset($_SESSION['db_error']);
     </div>
     <div class="auth-card">
         <h1>Hubungkan Database</h1>
-        <p class="auth-sub">Masukkan kredensial PostgreSQL Anda</p>
+        <p class="auth-sub">Masukkan kredensial database Anda</p>
         <?php if ($error): ?>
         <div class="alert alert-error"><?= htmlspecialchars($error) ?></div>
         <?php endif; ?>
@@ -89,39 +100,61 @@ unset($_SESSION['db_error']);
                         MySQL / MariaDB
                     </span>
                 </label>
+                <label class="driver-opt" id="drv-sqlite">
+                    <input type="radio" name="driver" value="sqlite" onchange="onDriverChange()">
+                    <span class="driver-card">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M3 9h18M9 9v12" stroke="currentColor" stroke-width="1.5"/></svg>
+                        SQLite
+                    </span>
+                </label>
             </div>
 
-            <div class="form-row">
+            <!-- Form fields untuk PgSQL/MySQL -->
+            <div id="fields-network">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Host</label>
+                        <input type="text" name="host" id="inp-host" value="localhost" placeholder="localhost">
+                    </div>
+                    <div class="form-group form-group-sm">
+                        <label>Port</label>
+                        <input type="text" name="port" id="inp-port" value="5432" placeholder="5432">
+                    </div>
+                </div>
                 <div class="form-group">
-                    <label>Host</label>
-                    <input type="text" name="host" id="inp-host" value="localhost" placeholder="localhost">
+                    <label>Username</label>
+                    <input type="text" name="user" id="inp-user" value="adiriawan" placeholder="adiriawan">
                 </div>
-                <div class="form-group form-group-sm">
-                    <label>Port</label>
-                    <input type="text" name="port" id="inp-port" value="5432" placeholder="5432">
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" name="password" id="inp-password" placeholder="••••••••">
+                </div>
+                <div class="form-group">
+                    <label>Database</label>
+                    <div class="db-select-wrap">
+                        <select name="dbname" id="inp-dbname" disabled>
+                            <option value="">— muat daftar database —</option>
+                        </select>
+                        <button type="button" class="btn btn-outline btn-load-db" id="btn-load-db" onclick="loadDatabases()">
+                            <span id="load-btn-text">Muat</span>
+                            <span id="load-spinner" class="spinner" style="display:none"></span>
+                        </button>
+                    </div>
+                    <div id="db-load-error" class="field-error" style="display:none"></div>
                 </div>
             </div>
-            <div class="form-group">
-                <label>Username</label>
-                <input type="text" name="user" id="inp-user" value="adiriawan" placeholder="adiriawan">
-            </div>
-            <div class="form-group">
-                <label>Password</label>
-                <input type="password" name="password" id="inp-password" placeholder="••••••••">
-            </div>
-            <div class="form-group">
-                <label>Database</label>
-                <div class="db-select-wrap">
-                    <select name="dbname" id="inp-dbname" disabled>
-                        <option value="">— muat daftar database —</option>
-                    </select>
-                    <button type="button" class="btn btn-outline btn-load-db" id="btn-load-db" onclick="loadDatabases()">
-                        <span id="load-btn-text">Muat</span>
-                        <span id="load-spinner" class="spinner" style="display:none"></span>
-                    </button>
+
+            <!-- Form fields untuk SQLite -->
+            <div id="fields-sqlite" style="display:none">
+                <div class="form-group">
+                    <label>Path File Database (.db)</label>
+                    <input type="text" name="sqlite_path" id="inp-sqlite-path"
+                           placeholder="/Users/nama/database.db"
+                           style="font-family:var(--mono,monospace);font-size:13px">
+                    <div class="field-hint">Path absolut ke file SQLite. File akan dibuat jika belum ada.</div>
                 </div>
-                <div id="db-load-error" class="field-error" style="display:none"></div>
             </div>
+
             <button type="submit" class="btn btn-primary btn-full" id="btn-connect" disabled>Hubungkan</button>
         </form>
 
@@ -183,6 +216,18 @@ unset($_SESSION['db_error']);
 
         function onDriverChange() {
             const driver = document.querySelector('input[name=driver]:checked').value;
+            const isSQLite = driver === 'sqlite';
+
+            document.getElementById('fields-network').style.display = isSQLite ? 'none' : '';
+            document.getElementById('fields-sqlite').style.display  = isSQLite ? '' : 'none';
+
+            if (isSQLite) {
+                // SQLite: enable connect segera ketika path diisi
+                const pathEl = document.getElementById('inp-sqlite-path');
+                document.getElementById('btn-connect').disabled = pathEl.value.trim() === '';
+                return;
+            }
+
             const portEl = document.getElementById('inp-port');
             const userEl = document.getElementById('inp-user');
             // Update port default
@@ -199,6 +244,14 @@ unset($_SESSION['db_error']);
             sel.disabled = true;
             document.getElementById('btn-connect').disabled = true;
         }
+
+        // Enable connect button saat path SQLite diisi
+        document.getElementById('inp-sqlite-path').addEventListener('input', function() {
+            const driver = document.querySelector('input[name=driver]:checked').value;
+            if (driver === 'sqlite') {
+                document.getElementById('btn-connect').disabled = this.value.trim() === '';
+            }
+        });
         </script>
     </div>
 </div>

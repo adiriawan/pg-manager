@@ -28,14 +28,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['do_import'])) {
         // Ambil PK tabel tujuan
         $pkCol = null;
         try {
-            $st = $pdo->prepare("
-                SELECT ku.column_name FROM information_schema.table_constraints tc
-                JOIN information_schema.key_column_usage ku
-                    ON tc.constraint_name = ku.constraint_name AND tc.table_schema = ku.table_schema
-                WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = ? AND tc.table_name = ?
-                LIMIT 1");
-            $st->execute([$schema, $targetTable]);
-            $pkCol = $st->fetchColumn();
+            if (isSQLite()) {
+                $cols = getColumnsInfo($pdo, $schema, $targetTable);
+                foreach ($cols as $c) {
+                    if ($c['is_primary'] === 'YES') { $pkCol = $c['column_name']; break; }
+                }
+            } else {
+                $st = $pdo->prepare("
+                    SELECT ku.column_name FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage ku
+                        ON tc.constraint_name = ku.constraint_name AND tc.table_schema = ku.table_schema
+                    WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = ? AND tc.table_name = ?
+                    LIMIT 1");
+                $st->execute([$schema, $targetTable]);
+                $pkCol = $st->fetchColumn();
+            }
         } catch (Exception $e) {}
 
         try {
@@ -57,6 +64,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['do_import'])) {
                 if ($onConflict === 'skip') {
                     if (isMySQL()) {
                         $sql = 'INSERT IGNORE INTO ' . qualifiedTable($schema, $targetTable) . ' (' . implode(',', $insertCols) . ') VALUES (' . $ph . ')';
+                    } elseif (isSQLite()) {
+                        $sql = 'INSERT OR IGNORE INTO ' . qualifiedTable($schema, $targetTable) . ' (' . implode(',', $insertCols) . ') VALUES (' . $ph . ')';
                     } else {
                         $sql = 'INSERT INTO ' . qualifiedTable($schema, $targetTable) . ' (' . implode(',', $insertCols) . ') VALUES (' . $ph . ') ON CONFLICT DO NOTHING';
                     }

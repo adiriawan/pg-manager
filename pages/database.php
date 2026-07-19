@@ -6,10 +6,33 @@ $dbStats   = [];
 $tableStats = [];
 
 try {
-    $dbVersion = $pdo->query("SELECT version()")->fetchColumn();
-    $sysFilter = "'" . implode("','", systemSchemas()) . "'";
+    if (isSQLite()) {
+        $dbVersion = 'SQLite ' . $pdo->query("SELECT sqlite_version()")->fetchColumn();
+        $pageCount  = (int)$pdo->query("PRAGMA page_count")->fetchColumn();
+        $pageSize   = (int)$pdo->query("PRAGMA page_size")->fetchColumn();
+        $totalBytes = $pageCount * $pageSize;
+        if ($totalBytes >= 1048576)      $dbSize = round($totalBytes / 1048576, 2) . ' MB';
+        elseif ($totalBytes >= 1024)     $dbSize = round($totalBytes / 1024, 1) . ' KB';
+        else                             $dbSize = $totalBytes . ' B';
+        $dbStats['table_count'] = $pdo->query("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")->fetchColumn();
+        $dbStats['view_count']  = $pdo->query("SELECT COUNT(*) FROM sqlite_master WHERE type='view'")->fetchColumn();
+        $dbStats['connections'] = 1;
+        $sqliteTables = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")->fetchAll(PDO::FETCH_COLUMN);
+        foreach ($sqliteTables as $tblName) {
+            $cnt = $pdo->query("SELECT COUNT(*) FROM " . qi($tblName))->fetchColumn();
+            $tableStats[] = [
+                'table_schema'    => 'main',
+                'table_name'      => $tblName,
+                'row_estimate'    => $cnt,
+                'data_size'       => '—',
+                'total_size'      => '—',
+                'last_autovacuum' => null,
+            ];
+        }
+    } elseif (isMySQL()) {
+        $dbVersion = $pdo->query("SELECT version()")->fetchColumn();
+        $sysFilter = "'" . implode("','", systemSchemas()) . "'";
 
-    if (isMySQL()) {
         $stmt = $pdo->prepare("SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2)
             FROM information_schema.tables WHERE table_schema = ?");
         $stmt->execute([$creds['dbname']]);
@@ -36,6 +59,10 @@ try {
         $dbStats['table_count']       = $pdo->query("SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ($sysFilter) AND table_type='BASE TABLE'")->fetchColumn();
         $dbStats['view_count']        = $pdo->query("SELECT count(*) FROM information_schema.views WHERE table_schema NOT IN ($sysFilter)")->fetchColumn();
     } else {
+        // PostgreSQL
+        $dbVersion = $pdo->query("SELECT version()")->fetchColumn();
+        $sysFilter = "'" . implode("','", systemSchemas()) . "'";
+
         $stmt = $pdo->prepare("SELECT pg_size_pretty(pg_database_size(?))");
         $stmt->execute([$creds['dbname']]);
         $dbSize = $stmt->fetchColumn();
@@ -77,16 +104,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_table'])) {
             $colType = $colTypes[$i] ?? 'text';
             $nullable = isset($colNulls[$i]) ? '' : 'NOT NULL';
             $pk = isset($colPks[$i]) ? 'PRIMARY KEY' : '';
-            // MySQL AUTO_INCREMENT untuk tipe serial
-        if (isMySQL() && in_array($colType, ['bigserial','serial'])) {
-            $colType = $colType === 'bigserial' ? 'BIGINT AUTO_INCREMENT' : 'INT AUTO_INCREMENT';
+            // Konversi tipe serial per driver
+            if (isMySQL() && in_array($colType, ['bigserial','serial'])) {
+                $colType = $colType === 'bigserial' ? 'BIGINT AUTO_INCREMENT' : 'INT AUTO_INCREMENT';
+            }
+            if (isSQLite() && in_array($colType, ['bigserial','serial'])) {
+                $colType = 'INTEGER';
+                $pk = 'PRIMARY KEY AUTOINCREMENT';
+                $nullable = ''; // INTEGER PRIMARY KEY cannot have NOT NULL separately
+            }
+            $colDefs[] = qi($colName) . " $colType $nullable $pk";
         }
-        $colDefs[] = qi($colName) . " $colType $nullable $pk";
-        }
+        if (isSQLite()) $newSchema = 'main';
         if ($tableName && $colDefs) {
             $sql = "CREATE TABLE " . qualifiedTable($newSchema, $tableName) . " (" . implode(', ', $colDefs) . ")";
             $pdo->exec($sql);
-            $_SESSION['flash_message'] = "Tabel $newSchema.$tableName berhasil dibuat.";
+            $schemaLabel = isSQLite() ? $tableName : "$newSchema.$tableName";
+            $_SESSION['flash_message'] = "Tabel $schemaLabel berhasil dibuat.";
             header('Location: app.php?page=table-editor&schema=' . urlencode($newSchema) . '&table=' . urlencode($tableName));
             exit;
         }
@@ -97,9 +131,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_table'])) {
 ?>
 <div class="page-header">
     <h1>Database Overview</h1>
-    <p class="page-sub"><?= htmlspecialchars($creds['dbname']) ?> @ <?= htmlspecialchars($creds['host']) ?></p>
+    <p class="page-sub">
+        <?= htmlspecialchars(isSQLite() ? basename($creds['dbname']) : $creds['dbname']) ?>
+        <?php if (!isSQLite()): ?> @ <?= htmlspecialchars($creds['host']) ?><?php endif; ?>
+    </p>
     <div class="header-actions">
+        <?php if (!isSQLite()): ?>
         <button class="btn btn-outline" onclick="openModal('modal-manage-db')">🗄️ Kelola Database</button>
+        <?php endif; ?>
         <button class="btn btn-primary" onclick="openModal('modal-create-table')">+ Buat Tabel</button>
     </div>
 </div>
@@ -130,9 +169,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_table'])) {
 
 <!-- Version Info -->
 <div class="info-block">
-    <strong>Versi PostgreSQL:</strong>
+    <strong>Versi <?= isSQLite() ? 'SQLite' : (isMySQL() ? 'MySQL' : 'PostgreSQL') ?>:</strong>
     <code><?= htmlspecialchars(preg_replace('/\(.*\)/', '', $dbVersion)) ?></code>
 </div>
+<?php if (isSQLite()): ?>
+<div class="info-block">
+    <strong>File:</strong>
+    <code><?= htmlspecialchars($creds['dbname']) ?></code>
+</div>
+<?php endif; ?>
 
 <!-- Table Stats -->
 <h2 class="section-title">Tabel & Ukuran</h2>
@@ -185,6 +230,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_table'])) {
                         <label>Nama Tabel</label>
                         <input type="text" name="new_table_name" placeholder="nama_tabel" pattern="[a-zA-Z0-9_]+" required>
                     </div>
+                    <?php if (!isSQLite()): ?>
                     <div class="form-group form-group-sm">
                         <label>Schema</label>
                         <select name="new_table_schema">
@@ -193,6 +239,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_table'])) {
                             <?php endforeach; ?>
                         </select>
                     </div>
+                    <?php else: ?>
+                    <input type="hidden" name="new_table_schema" value="main">
+                    <?php endif; ?>
                 </div>
                 <h4 style="margin:16px 0 8px">Kolom</h4>
                 <div id="col-list">

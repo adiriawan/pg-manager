@@ -23,7 +23,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['_action'] ?? '') === 'back
     $filename = "{$dbname}_{$ts}.sql";
     $filepath = BACKUP_DIR . '/' . $filename;
 
-    if (isMySQL()) {
+    if (isSQLite()) {
+        // SQLite backup: gunakan VACUUM INTO (SQLite 3.27+)
+        $safeName = preg_replace('/[^a-zA-Z0-9_\-]/', '_', basename($creds['dbname']));
+        $filename = "{$safeName}_{$ts}.db";
+        $filepath = BACKUP_DIR . '/' . $filename;
+        if (!is_dir(BACKUP_DIR)) mkdir(BACKUP_DIR, 0755, true);
+        try {
+            $pdo->exec("VACUUM INTO " . $pdo->quote($filepath));
+            $_SESSION['flash'] = ['type' => 'success', 'msg' => "Backup SQLite <strong>$filename</strong> berhasil dibuat (" . formatBytes(filesize($filepath)) . ")."];
+        } catch (Exception $e) {
+            // Fallback: PHP copy
+            if (copy($creds['dbname'], $filepath)) {
+                $_SESSION['flash'] = ['type' => 'success', 'msg' => "Backup SQLite <strong>$filename</strong> berhasil (copy) (" . formatBytes(filesize($filepath)) . ")."];
+            } else {
+                $_SESSION['flash'] = ['type' => 'error', 'msg' => "Backup SQLite gagal: " . htmlspecialchars($e->getMessage())];
+            }
+        }
+        header('Location: app.php?page=backup&schema=' . urlencode($schema));
+        exit;
+    } elseif (isMySQL()) {
         // mysqldump
         $mysqlPwd = $creds['password'] ? '-p' . escapeshellarg($creds['password']) : '';
         $cmd = MYSQL_DUMP
@@ -213,15 +232,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['_action'] ?? '') === 'rest
 // ============================================================
 $databases = [];
 try {
-    $stmt = $pdo->query("SELECT datname FROM pg_database WHERE datistemplate=false ORDER BY datname");
-    $databases = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    if (!isSQLite()) {
+        $stmt = $pdo->query("SELECT datname FROM pg_database WHERE datistemplate=false ORDER BY datname");
+        $databases = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    } else {
+        $databases = [basename($creds['dbname'])];
+    }
 } catch (Exception $e) {}
 
 // ============================================================
 // Ambil daftar file backup
 // ============================================================
 $backupFiles = [];
-foreach (glob(BACKUP_DIR . '/*.{sql,dump,tar}', GLOB_BRACE) as $f) {
+foreach (glob(BACKUP_DIR . '/*.{sql,dump,tar,db}', GLOB_BRACE) as $f) {
     $backupFiles[] = [
         'name'    => basename($f),
         'size'    => filesize($f),

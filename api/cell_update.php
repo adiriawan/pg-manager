@@ -18,30 +18,40 @@ if (!$schema || !$table || !$pkCol || $pkVal === '' || !$col) {
 }
 
 // Blokir akses ke schema sistem
-if (in_array(strtolower($schema), systemSchemas())) {
+if (!isSQLite() && in_array(strtolower($schema), systemSchemas())) {
     echo json_encode(['error' => 'Akses ke schema sistem tidak diizinkan']); exit;
 }
 
 try {
-    // Validasi schema
-    $schemaChk = $pdo->prepare("SELECT 1 FROM information_schema.schemata WHERE schema_name = ? LIMIT 1");
-    $schemaChk->execute([$schema]);
-    if (!$schemaChk->fetchColumn()) {
-        echo json_encode(['error' => 'Schema tidak valid']); exit;
-    }
+    if (isSQLite()) {
+        // Validasi kolom via PRAGMA untuk SQLite
+        if (!columnExistsSQLite($pdo, $table, $col)) {
+            echo json_encode(['error' => 'Kolom tidak valid']); exit;
+        }
+        if (!columnExistsSQLite($pdo, $table, $pkCol)) {
+            echo json_encode(['error' => 'Primary key tidak valid']); exit;
+        }
+    } else {
+        // Validasi schema
+        $schemaChk = $pdo->prepare("SELECT 1 FROM information_schema.schemata WHERE schema_name = ? LIMIT 1");
+        $schemaChk->execute([$schema]);
+        if (!$schemaChk->fetchColumn()) {
+            echo json_encode(['error' => 'Schema tidak valid']); exit;
+        }
 
-    // Validasi kolom
-    $chk = $pdo->prepare(columnExistsQuery());
-    $chk->execute([$schema, $table, $col]);
-    if (!$chk->fetchColumn()) {
-        echo json_encode(['error' => 'Kolom tidak valid']); exit;
-    }
+        // Validasi kolom
+        $chk = $pdo->prepare(columnExistsQuery());
+        $chk->execute([$schema, $table, $col]);
+        if (!$chk->fetchColumn()) {
+            echo json_encode(['error' => 'Kolom tidak valid']); exit;
+        }
 
-    // Validasi pkCol
-    $pkChk = $pdo->prepare(columnExistsQuery());
-    $pkChk->execute([$schema, $table, $pkCol]);
-    if (!$pkChk->fetchColumn()) {
-        echo json_encode(['error' => 'Primary key tidak valid']); exit;
+        // Validasi pkCol
+        $pkChk = $pdo->prepare(columnExistsQuery());
+        $pkChk->execute([$schema, $table, $pkCol]);
+        if (!$pkChk->fetchColumn()) {
+            echo json_encode(['error' => 'Primary key tidak valid']); exit;
+        }
     }
 
     $newVal = $setNull ? null : ($val === '' ? null : $val);

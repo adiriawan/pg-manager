@@ -2,7 +2,22 @@
 // Ambil semua tabel + kolom
 $tableColumns = [];
 try {
-    if (isMySQL()) {
+    if (isSQLite()) {
+        $sqliteTbls = getTablesSQLite($pdo);
+        foreach ($sqliteTbls as $tblName) {
+            $cols = getColumnsInfo($pdo, 'main', $tblName);
+            foreach ($cols as $col) {
+                $tableColumns[$tblName][] = [
+                    'table_name'    => $tblName,
+                    'column_name'   => $col['column_name'],
+                    'data_type'     => $col['data_type'],
+                    'is_nullable'   => $col['is_nullable'],
+                    'column_default'=> $col['column_default'],
+                    'is_primary'    => $col['is_primary'] === 'YES' ? 1 : 0,
+                ];
+            }
+        }
+    } elseif (isMySQL()) {
         $stmt = $pdo->prepare("
             SELECT c.table_name, c.column_name, c.data_type, c.is_nullable, c.column_default,
                    CASE WHEN c.COLUMN_KEY = 'PRI' THEN 1 ELSE 0 END as is_primary
@@ -11,6 +26,9 @@ try {
             ORDER BY c.table_name, c.ordinal_position
         ");
         $stmt->execute([$schema]);
+        foreach ($stmt->fetchAll() as $row) {
+            $tableColumns[$row['table_name']][] = $row;
+        }
     } else {
         $stmt = $pdo->prepare("
             SELECT c.table_name, c.column_name, c.data_type, c.is_nullable, c.column_default,
@@ -27,16 +45,18 @@ try {
             ORDER BY c.table_name, c.ordinal_position
         ");
         $stmt->execute([$schema, $schema]);
-    }
-    foreach ($stmt->fetchAll() as $row) {
-        $tableColumns[$row['table_name']][] = $row;
+        foreach ($stmt->fetchAll() as $row) {
+            $tableColumns[$row['table_name']][] = $row;
+        }
     }
 } catch (Exception $e) {}
 
 // Ambil semua foreign key
 $foreignKeys = [];
 try {
-    if (isMySQL()) {
+    if (isSQLite()) {
+        $foreignKeys = getForeignKeysSQLite($pdo);
+    } elseif (isMySQL()) {
         $stmt = $pdo->prepare("
             SELECT kcu.TABLE_NAME as from_table, kcu.COLUMN_NAME as from_column,
                    kcu.REFERENCED_TABLE_NAME as to_table, kcu.REFERENCED_COLUMN_NAME as to_column,
@@ -46,6 +66,7 @@ try {
             ORDER BY kcu.TABLE_NAME, kcu.COLUMN_NAME
         ");
         $stmt->execute([$schema]);
+        $foreignKeys = $stmt->fetchAll();
     } else {
         $stmt = $pdo->prepare("
             SELECT tc.table_name as from_table, kcu.column_name as from_column,
@@ -59,8 +80,8 @@ try {
             ORDER BY tc.table_name, kcu.column_name
         ");
         $stmt->execute([$schema]);
+        $foreignKeys = $stmt->fetchAll();
     }
-    $foreignKeys = $stmt->fetchAll();
 } catch (Exception $e) {}
 ?>
 

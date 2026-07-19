@@ -13,8 +13,13 @@ $page   = $_GET['page'] ?? 'table-editor';
 $schema = $_GET['schema'] ?? 'public';
 $table  = $_GET['table'] ?? null;
 
+// Untuk SQLite selalu gunakan schema 'main'
+if (isSQLite()) {
+    $schema = 'main';
+}
+
 // Blokir akses schema sistem di seluruh app
-if (in_array(strtolower($schema), systemSchemas())) {
+if (!isSQLite() && in_array(strtolower($schema), systemSchemas())) {
     $schema = isMySQL() ? ($creds['dbname'] ?? 'public') : 'public';
     $table  = null;
 }
@@ -26,7 +31,7 @@ if (isset($_GET['export']) && $table && in_array($page, ['table-editor'])) {
     $exportTable  = $table;
     $safeName     = preg_replace('/[^a-zA-Z0-9_]/', '_', $exportTable);
     try {
-        $rows = $pdo->query('SELECT * FROM "' . $exportSchema . '"."' . $exportTable . '"')->fetchAll();
+        $rows = $pdo->query('SELECT * FROM ' . qualifiedTable($exportSchema, $exportTable))->fetchAll();
         if ($fmt === 'json') {
             header('Content-Type: application/json');
             header("Content-Disposition: attachment; filename=\"{$safeName}.json\"");
@@ -84,25 +89,36 @@ if (isset($_GET['export']) && $page === 'sql-editor' && isset($_SESSION['last_sq
 
 // Ambil semua schema
 $schemas = [];
-try {
-    $schemas = $pdo->query(schemataQuery())->fetchAll(PDO::FETCH_COLUMN);
-} catch (Exception $e) {}
+if (!isSQLite()) {
+    try {
+        $sq = schemataQuery();
+        if ($sq) $schemas = $pdo->query($sq)->fetchAll(PDO::FETCH_COLUMN);
+    } catch (Exception $e) {}
+} else {
+    $schemas = ['main'];
+}
 
 // Ambil semua tabel di schema aktif
 $tables = [];
 try {
-    $stmt = $pdo->prepare("SELECT table_name FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE' ORDER BY table_name");
-    $stmt->execute([$schema]);
-    $tables = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    if (isSQLite()) {
+        $tables = getTablesSQLite($pdo);
+    } else {
+        $stmt = $pdo->prepare("SELECT table_name FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE' ORDER BY table_name");
+        $stmt->execute([$schema]);
+        $tables = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    }
 } catch (Exception $e) {}
 
-// Ambil semua views
+// Ambil semua views (SQLite tidak punya views API yang mudah, skip untuk sekarang)
 $views = [];
-try {
-    $stmt = $pdo->prepare("SELECT table_name FROM information_schema.views WHERE table_schema = ? ORDER BY table_name");
-    $stmt->execute([$schema]);
-    $views = $stmt->fetchAll(PDO::FETCH_COLUMN);
-} catch (Exception $e) {}
+if (!isSQLite()) {
+    try {
+        $stmt = $pdo->prepare("SELECT table_name FROM information_schema.views WHERE table_schema = ? ORDER BY table_name");
+        $stmt->execute([$schema]);
+        $views = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    } catch (Exception $e) {}
+}
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -136,8 +152,15 @@ try {
         <div class="sidebar-db-info">
             <div class="sidebar-db-name"><?= htmlspecialchars($creds['dbname']) ?></div>
             <div class="sidebar-db-host">
-                <span class="driver-badge driver-badge-<?= htmlspecialchars($creds['driver'] ?? 'pgsql') ?>"><?= isMySQL() ? 'MySQL' : 'PostgreSQL' ?></span>
+                <?php
+                $drvLabel = isMySQL() ? 'MySQL' : (isSQLite() ? 'SQLite' : 'PostgreSQL');
+                ?>
+                <span class="driver-badge driver-badge-<?= htmlspecialchars($creds['driver'] ?? 'pgsql') ?>"><?= $drvLabel ?></span>
+                <?php if (isSQLite()): ?>
+                <span style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px" title="<?= htmlspecialchars($creds['dbname']) ?>"><?= htmlspecialchars(basename($creds['dbname'])) ?></span>
+                <?php else: ?>
                 <?= htmlspecialchars($creds['host']) ?>:<?= htmlspecialchars($creds['port']) ?>
+                <?php endif; ?>
             </div>
         </div>
         <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Ganti tema">☀️</button>
