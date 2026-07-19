@@ -136,9 +136,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['csv_file'])) {
 $targetCols = [];
 if ($targetTable && in_array($targetTable, $tables)) {
     try {
-        $stmt = $pdo->prepare("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position");
-        $stmt->execute([$schema, $targetTable]);
-        $targetCols = $stmt->fetchAll();
+        $targetCols = getColumnsInfo($pdo, $schema, $targetTable);
     } catch (Exception $e) {}
 }
 ?>
