@@ -224,6 +224,24 @@ function truncateSql(string $schema, string $table): string {
     return 'TRUNCATE TABLE ' . qualifiedTable($schema, $table) . ' RESTART IDENTITY';
 }
 
+// Deteksi SQL destruktif (DROP/TRUNCATE/ALTER..DROP, DELETE/UPDATE tanpa WHERE).
+// Mengembalikan alasan (string) atau null jika aman.
+function dangerousSqlReason(string $sql): ?string {
+    $sql = preg_replace('/\/\*.*?\*\//s', ' ', $sql);
+    $sql = preg_replace('/--[^\n]*/', ' ', $sql);
+    $sql = preg_replace("/'(?:[^']|'')*'/", "''", $sql);
+    $sql = preg_replace('/"(?:[^"]|"")*"/', '""', $sql);
+    foreach (explode(';', $sql) as $stmt) {
+        $stmt = trim($stmt);
+        if ($stmt === '') continue;
+        if (preg_match('/^(DROP|TRUNCATE)\b/i', $stmt, $m)) return strtoupper($m[1]) . ' menghapus objek/data secara permanen';
+        if (preg_match('/^ALTER\b.*\bDROP\b/is', $stmt)) return 'ALTER ... DROP menghapus kolom/constraint';
+        if (preg_match('/^DELETE\b/i', $stmt) && !preg_match('/\bWHERE\b/i', $stmt)) return 'DELETE tanpa WHERE akan menghapus SEMUA baris';
+        if (preg_match('/^UPDATE\b/i', $stmt) && !preg_match('/\bWHERE\b/i', $stmt)) return 'UPDATE tanpa WHERE akan mengubah SEMUA baris';
+    }
+    return null;
+}
+
 // BUG-04 FIX: CSRF token helper
 function csrfToken(): string {
     if (empty($_SESSION['csrf_token'])) {

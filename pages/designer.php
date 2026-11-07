@@ -211,9 +211,11 @@ function dsAddTable(x, y) {
 
 function dsClearAll() {
     if (!Object.keys(dsTables).length) return;
-    if (!confirm('Hapus semua tabel dari canvas?')) return;
-    dsTables = {}; dsFKs = []; dsNextId = 1;
-    dsRender(); dsUpdateStat();
+    pgmConfirm({ title: 'Kosongkan Canvas', message: 'Hapus semua tabel dari canvas?', danger: true, confirmText: 'Hapus Semua' }).then(ok => {
+        if (!ok) return;
+        dsTables = {}; dsFKs = []; dsNextId = 1;
+        dsRender(); dsUpdateStat();
+    });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -557,19 +559,22 @@ function dsFkDrop(e) {
 function dsEditTableName(id) {
     const tbl = dsTables[id];
     const old = tbl.name;
-    const val = prompt('Nama tabel:', old);
-    if (val === null) return;
-    const name = val.trim().replace(/\s+/g, '_');
-    if (!name) return;
-    tbl.name = name;
-    dsRender();
+    pgmPrompt('Nama tabel:', old, 'Ubah Nama Tabel').then(val => {
+        if (val === null) return;
+        const name = val.trim().replace(/\s+/g, '_');
+        if (!name) return;
+        tbl.name = name;
+        dsRender();
+    });
 }
 
 function dsDeleteTable(id) {
-    if (!confirm(`Hapus tabel "${dsTables[id].name}" dari canvas?`)) return;
-    delete dsTables[id];
-    dsFKs = dsFKs.filter(fk => fk.fromTable !== id && fk.toTable !== id);
-    dsRender(); dsUpdateStat();
+    pgmConfirm({ title: 'Hapus Tabel', message: `Hapus tabel "${dsTables[id].name}" dari canvas?`, danger: true, confirmText: 'Hapus' }).then(ok => {
+        if (!ok) return;
+        delete dsTables[id];
+        dsFKs = dsFKs.filter(fk => fk.fromTable !== id && fk.toTable !== id);
+        dsRender(); dsUpdateStat();
+    });
 }
 
 function dsAddColumn(tableId) {
@@ -660,7 +665,7 @@ function dsSaveColumn(tableId, colId) {
 
 function dsDeleteColumn(tableId, colId) {
     const tbl = dsTables[tableId];
-    if (tbl.columns.length <= 1) { alert('Tabel harus punya minimal 1 kolom.'); return; }
+    if (tbl.columns.length <= 1) { pgmAlert('Tabel harus punya minimal 1 kolom.'); return; }
     tbl.columns = tbl.columns.filter(c => c.id !== colId);
     dsFKs = dsFKs.filter(fk => !(fk.fromTable===tableId && fk.fromCol===colId) &&
                                 !(fk.toTable===tableId   && fk.toCol===colId));
@@ -669,9 +674,11 @@ function dsDeleteColumn(tableId, colId) {
 }
 
 function dsDeleteFk(fkId) {
-    if (!confirm('Hapus relasi FK ini?')) return;
-    dsFKs = dsFKs.filter(fk => fk.id !== fkId);
-    dsRender(); dsUpdateStat();
+    pgmConfirm({ title: 'Hapus Relasi', message: 'Hapus relasi FK ini?', danger: true, confirmText: 'Hapus' }).then(ok => {
+        if (!ok) return;
+        dsFKs = dsFKs.filter(fk => fk.id !== fkId);
+        dsRender(); dsUpdateStat();
+    });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -721,7 +728,7 @@ function dsGenerateSql() {
 }
 
 function dsPreviewSql() {
-    if (!Object.keys(dsTables).length) { alert('Belum ada tabel di canvas.'); return; }
+    if (!Object.keys(dsTables).length) { pgmAlert('Belum ada tabel di canvas.'); return; }
     const sqls = dsGenerateSql();
     document.getElementById('ds-sql-preview').textContent = sqls.join('\n\n');
     openModal('ds-modal-sql');
@@ -729,11 +736,11 @@ function dsPreviewSql() {
 
 function dsCopySql() {
     const text = document.getElementById('ds-sql-preview').textContent;
-    navigator.clipboard.writeText(text).then(() => alert('SQL disalin ke clipboard!'));
+    navigator.clipboard.writeText(text).then(() => pgmAlert('SQL disalin ke clipboard!'));
 }
 
 function dsExecute() {
-    if (!Object.keys(dsTables).length) { alert('Belum ada tabel di canvas.'); return; }
+    if (!Object.keys(dsTables).length) { pgmAlert('Belum ada tabel di canvas.'); return; }
     const sqls = dsGenerateSql();
     document.getElementById('ds-execute-preview').textContent = sqls.join('\n\n');
     document.getElementById('ds-sql-input').value = JSON.stringify(sqls);

@@ -9,6 +9,22 @@ if (!defined('BACKUP_DIR')) define('BACKUP_DIR', __DIR__ . '/../backups');
 $flash   = null;
 $flashType = 'success';
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST') verifyCsrf();
+
+// Backup otomatis sebelum restore yang menghapus schema (pengaman data)
+function autoBackupBeforeRestore(array $creds): ?string {
+    if (isSQLite() || isMySQL()) return null;
+    if (!is_dir(BACKUP_DIR)) mkdir(BACKUP_DIR, 0755, true);
+    $fn = 'AUTO_prerestore_' . $creds['dbname'] . '_' . date('Ymd_His') . '.sql';
+    $cmd = 'PGPASSWORD=' . escapeshellarg($creds['password']) . ' ' . PG_DUMP
+         . ' -h ' . escapeshellarg($creds['host']) . ' -p ' . escapeshellarg($creds['port'])
+         . ' -U ' . escapeshellarg($creds['user']) . ' ' . escapeshellarg($creds['dbname'])
+         . ' > ' . escapeshellarg(BACKUP_DIR . '/' . $fn) . ' 2>/dev/null';
+    exec($cmd, $o, $rc);
+    if ($rc !== 0 || !filesize(BACKUP_DIR . '/' . $fn)) { @unlink(BACKUP_DIR . '/' . $fn); return false; }
+    return $fn;
+}
+
 // ============================================================
 // ACTION: Buat backup baru
 // ============================================================
@@ -136,6 +152,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['_action'] ?? '') === 'dele
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['_action'] ?? '') === 'restore_upload') {
     $target_db  = trim($_POST['target_db'] ?? $creds['dbname']);
     $drop_first = isset($_POST['drop_first']);
+    if ($drop_first && ($target_db === $creds['dbname'])) {
+        $ab = autoBackupBeforeRestore($creds);
+        if ($ab === false) {
+            $_SESSION['flash'] = ['type' => 'error', 'msg' => 'Restore dibatalkan: backup otomatis sebelum restore GAGAL, data lama tidak disentuh.'];
+            header('Location: app.php?page=backup&schema=' . urlencode($schema));
+            exit;
+        }
+    }
 
     if (empty($_FILES['restore_file']['tmp_name'])) {
         $_SESSION['flash'] = ['type' => 'error', 'msg' => 'Pilih file backup terlebih dahulu.'];
@@ -190,6 +214,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['_action'] ?? '') === 'rest
     $target_db  = trim($_POST['target_db'] ?? $creds['dbname']);
     $drop_first = isset($_POST['drop_first']);
     $path       = BACKUP_DIR . '/' . $file;
+    if ($drop_first && ($target_db === $creds['dbname'])) {
+        $ab = autoBackupBeforeRestore($creds);
+        if ($ab === false) {
+            $_SESSION['flash'] = ['type' => 'error', 'msg' => 'Restore dibatalkan: backup otomatis sebelum restore GAGAL, data lama tidak disentuh.'];
+            header('Location: app.php?page=backup&schema=' . urlencode($schema));
+            exit;
+        }
+    }
 
     if (!$file || !file_exists($path)) {
         $_SESSION['flash'] = ['type' => 'error', 'msg' => 'File tidak ditemukan.'];
@@ -333,7 +365,8 @@ function formatBytes($bytes) {
                                 onclick="openRestoreModal('<?= addslashes($bf['name']) ?>')">↩ Restore</button>
 
                             <!-- Delete -->
-                            <form method="POST" onsubmit="return confirm('Hapus file ini?')">
+                            <form method="POST" data-confirm="Hapus file backup ini secara permanen?" data-confirm-title="Hapus Backup" data-confirm-danger data-confirm-ok="Hapus">
+                                <?= csrfField() ?>
                                 <input type="hidden" name="_action" value="delete_backup">
                                 <input type="hidden" name="filename" value="<?= htmlspecialchars($bf['name']) ?>">
                                 <button type="submit" class="btn btn-outline btn-sm btn-danger" title="Hapus">🗑</button>
@@ -380,6 +413,7 @@ function formatBytes($bytes) {
             <button class="modal-close" onclick="closeModal('modal-backup')">×</button>
         </div>
         <form method="POST">
+            <?= csrfField() ?>
             <input type="hidden" name="_action" value="backup">
             <div class="modal-body">
 
@@ -460,6 +494,7 @@ function formatBytes($bytes) {
             <button class="modal-close" onclick="closeModal('modal-restore-upload')">×</button>
         </div>
         <form method="POST" enctype="multipart/form-data">
+            <?= csrfField() ?>
             <input type="hidden" name="_action" value="restore_upload">
             <div class="modal-body">
                 <div class="alert alert-error">
@@ -508,6 +543,7 @@ function formatBytes($bytes) {
             <button class="modal-close" onclick="closeModal('modal-restore-existing')">×</button>
         </div>
         <form method="POST">
+            <?= csrfField() ?>
             <input type="hidden" name="_action" value="restore_existing">
             <input type="hidden" name="filename" id="restore-existing-file">
             <div class="modal-body">

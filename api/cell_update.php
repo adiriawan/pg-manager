@@ -4,6 +4,9 @@ header('Content-Type: application/json');
 
 if (!isConnected()) { echo json_encode(['error' => 'Tidak terkoneksi']); exit; }
 
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') { echo json_encode(['error' => 'Method not allowed']); exit; }
+verifyCsrf();
+
 $pdo    = getPdo();
 $schema = $_POST['schema'] ?? '';
 $table  = $_POST['table']  ?? '';

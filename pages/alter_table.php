@@ -118,6 +118,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         if ($op === 'drop_col') {
             $col = $_POST['drop_col_name'] ?? '';
+            if (($_POST['drop_col_confirm'] ?? '') !== $col) {
+                throw new Exception('Drop kolom dibatalkan: nama kolom konfirmasi tidak cocok.');
+            }
             if ($col && in_array($col, $validColNames)) {
                 $cascade = isPgSQL() ? ' CASCADE' : '';
                 $pdo->exec("ALTER TABLE $qtbl DROP COLUMN " . qi($col) . $cascade);
@@ -266,7 +269,7 @@ $typeOptions = ['text','varchar(255)','integer','bigint','bigserial','serial','b
                                pattern="[a-zA-Z0-9_]+" value="<?= htmlspecialchars($table) ?>" required>
                     </div>
                     <button type="submit" class="btn btn-primary btn-sm"
-                        onclick="return confirm('Yakin rename tabel ini?')">Rename Tabel</button>
+                        data-confirm="Yakin rename tabel ini?" data-confirm-title="Rename Tabel">Rename Tabel</button>
                 </form>
             </div>
         </div>
@@ -410,10 +413,13 @@ $typeOptions = ['text','varchar(255)','integer','bigint','bigserial','serial','b
                 <div class="alert alert-error">
                     Kolom <strong id="dropcol-label"></strong> akan dihapus permanen beserta semua datanya (CASCADE).
                 </div>
+                <p style="margin-top:8px">Ketik nama kolom untuk konfirmasi:</p>
+                <input type="text" id="dropcol-confirm" name="drop_col_confirm" autocomplete="off"
+                       oninput="document.getElementById('dropcol-submit').disabled = this.value !== document.getElementById('dropcol-name').value">
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline" onclick="closeModal('modal-drop-col')">Batal</button>
-                <button type="submit" class="btn btn-danger">Hapus Kolom</button>
+                <button type="submit" class="btn btn-danger" id="dropcol-submit" disabled>Hapus Kolom</button>
             </div>
         </form>
     </div>
@@ -459,6 +465,8 @@ function openNullable(col, curNullable) {
 }
 function openDropCol(col) {
     document.getElementById('dropcol-name').value          = col;
+    document.getElementById('dropcol-confirm').value       = '';
+    document.getElementById('dropcol-submit').disabled     = true;
     document.getElementById('dropcol-label').textContent   = col;
     openModal('modal-drop-col');
 }

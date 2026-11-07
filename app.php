@@ -241,7 +241,42 @@ if (!isSQLite()) {
             Panduan
         </a>
 
+    <?php if (isSQLite() && !empty($creds['android_path'])): ?>
+    <div style="padding:8px 12px">
+        <button onclick="refreshFromEmulator(this)" class="btn btn-outline" style="width:100%;font-size:12px;padding:6px 8px">
+            🔄 Refresh dari Emulator
+        </button>
+        <div id="adb-status" style="font-size:11px;margin-top:4px;color:var(--text-muted);text-align:center;min-height:14px"></div>
+    </div>
+    <script>
+    async function refreshFromEmulator(btn) {
+        const status = document.getElementById('adb-status');
+        btn.disabled = true;
+        btn.textContent = '⏳ Mengambil…';
+        status.textContent = '';
+        try {
+            const res  = await fetch('api/adb_refresh.php');
+            const data = await res.json();
+            if (data.ok) {
+                status.style.color = '#3ECF8E';
+                status.textContent = '✅ ' + data.message + ' (' + data.time + ')';
+                setTimeout(() => location.reload(), 800);
+            } else {
+                status.style.color = '#f87171';
+                status.textContent = '❌ ' + (data.error || 'Gagal');
+            }
+        } catch(e) {
+            status.style.color = '#f87171';
+            status.textContent = '❌ Tidak bisa menghubungi server';
+        }
+        btn.disabled = false;
+        btn.textContent = '🔄 Refresh dari Emulator';
+    }
+    </script>
+    <?php endif; ?>
+
     <div class="sidebar-footer">
+        <button type="button" class="btn btn-outline" style="width:100%;margin-bottom:8px;font-size:12px" onclick="toggleSidebar()" title="Ctrl+B">« Sembunyikan Sidebar</button>
         <form method="POST" action="index.php">
             <input type="hidden" name="action" value="disconnect">
             <button type="submit" class="btn-disconnect">Putus Koneksi</button>
@@ -250,6 +285,7 @@ if (!isSQLite()) {
 </aside>
 
 <!-- Main Content -->
+<button class="sidebar-expand-btn" onclick="toggleSidebar()" title="Tampilkan sidebar (Ctrl+B)">»</button>
 <main class="main-content <?= in_array($page, ['erd','designer']) ? 'main-erd' : '' ?>">
 
     <!-- ── Breadcrumb ────────────────────────────────────── -->

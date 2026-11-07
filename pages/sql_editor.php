@@ -9,10 +9,15 @@ $lastSql  = $_SESSION['last_sql'] ?? '';
 define('SQL_EDITOR_MAX_ROWS', 1000);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sql'])) {
+    verifyCsrf();
     $sql = trim($_POST['sql']);
     $_SESSION['last_sql'] = $sql;
     $start = microtime(true);
+    $dangerReason = dangerousSqlReason($sql);
     try {
+        if ($dangerReason && trim($_POST['confirm_danger'] ?? '') !== 'KONFIRMASI') {
+            throw new Exception("Dibatalkan: $dangerReason. Query tidak dijalankan. Ketik KONFIRMASI saat diminta untuk melanjutkan.");
+        }
         $stmt = $pdo->query($sql);
         $execTime = round((microtime(true) - $start) * 1000, 2);
         if ($stmt->columnCount() > 0) {
@@ -104,6 +109,8 @@ if (isset($_GET['export']) && isset($_SESSION['last_sql'])) {
     <!-- Editor utama -->
     <div class="sql-main">
         <form method="POST" id="sql-form">
+            <?= csrfField() ?>
+            <input type="hidden" name="confirm_danger" id="confirm-danger" value="">
             <div class="sql-toolbar">
                 <button type="submit" class="btn btn-primary">▶ Jalankan <kbd style="font-size:10px;margin-left:4px">Ctrl+↵</kbd></button>
                 <button type="button" class="btn btn-outline" onclick="clearEditor()">Bersihkan</button>
@@ -176,6 +183,35 @@ SELECT * FROM public.nama_tabel LIMIT 10;"><?= htmlspecialchars($lastSql) ?></te
 <script>
 // ── Line numbers ─────────────────────────────────────────────
 const sqlInput    = document.getElementById('sql-input');
+
+// Peringatan untuk query destruktif (server juga memeriksa ulang)
+function sqlDangerReason(sql) {
+    const clean = sql.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ')
+                     .replace(/'(?:[^']|'')*'/g, "''").replace(/"(?:[^"]|"")*"/g, '""');
+    for (let st of clean.split(';')) {
+        st = st.trim();
+        if (!st) continue;
+        if (/^(DROP|TRUNCATE)\b/i.test(st)) return st.split(/\s+/)[0].toUpperCase() + ' menghapus objek/data secara permanen';
+        if (/^ALTER\b[\s\S]*\bDROP\b/i.test(st)) return 'ALTER ... DROP menghapus kolom/constraint';
+        if (/^DELETE\b/i.test(st) && !/\bWHERE\b/i.test(st)) return 'DELETE tanpa WHERE akan menghapus SEMUA baris';
+        if (/^UPDATE\b/i.test(st) && !/\bWHERE\b/i.test(st)) return 'UPDATE tanpa WHERE akan mengubah SEMUA baris';
+    }
+    return null;
+}
+document.getElementById('sql-form').addEventListener('submit', function(e) {
+    const reason = sqlDangerReason(sqlInput.value);
+    const hidden = document.getElementById('confirm-danger');
+    hidden.value = '';
+    if (!reason || this._confirmed) return;
+    e.preventDefault();
+    pgmConfirm({ title: '⚠️ Query Berbahaya', message: reason + '.\n\nPastikan sudah backup.',
+                 danger: true, typeText: 'KONFIRMASI', confirmText: 'Jalankan' }).then(ok => {
+        if (!ok) return;
+        hidden.value = 'KONFIRMASI';
+        this._confirmed = true;
+        this.requestSubmit();
+    });
+});
 const lineNumbers = document.getElementById('line-numbers');
 
 function updateLineNumbers() {
@@ -191,7 +227,7 @@ sqlInput.addEventListener('keydown', function(e) {
         e.preventDefault();
         // Simpan ke tab aktif + history
         saveCurrentTab();
-        document.getElementById('sql-form').submit();
+        document.getElementById('sql-form').requestSubmit();
     }
     if (e.key === 'Tab') {
         e.preventDefault();

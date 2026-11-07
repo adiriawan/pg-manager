@@ -5,6 +5,8 @@ $preview   = [];
 $csvHeaders = [];
 $targetTable = $_GET['table'] ?? ($table ?? '');
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST') verifyCsrf();
+
 // ── Proses Import ─────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['do_import'])) {
     $targetTable  = $_POST['target_table']  ?? '';
@@ -23,6 +25,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['do_import'])) {
         $skipped    = 0;
         $errors     = 0;
         $lineNum    = 0;
+        $firstErr   = null;
         $delChar    = $delimiter === 'tab' ? "\t" : $delimiter;
 
         // Ambil PK tabel tujuan
@@ -79,17 +82,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['do_import'])) {
                     $affected = $st->rowCount();
                     if ($affected) $imported++; else $skipped++;
                 } catch (Exception $e) {
-                    if ($onConflict === 'error') throw $e;
+                    // PostgreSQL membatalkan seluruh transaksi setelah error; hentikan agar tidak melapor sukses palsu
+                    if ($onConflict === 'error' || isPgSQL()) {
+                        throw new Exception("Baris CSV ke-$lineNum: " . $e->getMessage());
+                    }
+                    $errors++;
+                    $firstErr ??= "Baris $lineNum: " . $e->getMessage();
                     $skipped++;
                 }
             }
             $pdo->commit();
-            $flash = "Import selesai: <strong>$imported</strong> baris berhasil, <strong>$skipped</strong> dilewati.";
+            $flash = "Import selesai: <strong>$imported</strong> baris berhasil, <strong>$skipped</strong> dilewati."
+                   . ($errors ? " <strong>$errors</strong> baris error (contoh: " . htmlspecialchars($firstErr) . ")" : '');
+            if ($errors) $flashType = 'error';
             @unlink($tmpFile);
             unset($_SESSION['csv_tmp']);
         } catch (Exception $e) {
-            $pdo->rollBack();
-            $flash     = 'Import gagal: ' . $e->getMessage();
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            $flash     = 'Import gagal (tidak ada data yang diubah): ' . htmlspecialchars($e->getMessage());
             $flashType = 'error';
         }
         fclose($handle);
@@ -158,6 +168,7 @@ if ($targetTable && in_array($targetTable, $tables)) {
             <div class="alter-card-header">📂 Pilih File CSV</div>
             <div class="alter-card-body">
                 <form method="POST" enctype="multipart/form-data" id="upload-form">
+                    <?= csrfField() ?>
                     <div class="form-group">
                         <label>File CSV</label>
                         <div class="file-drop-zone" onclick="document.getElementById('csv-file-input').click()">
@@ -221,6 +232,7 @@ if ($targetTable && in_array($targetTable, $tables)) {
     <!-- ── Panel Kanan: Mapping & Import ── -->
     <div>
         <form method="POST" id="import-form">
+            <?= csrfField() ?>
             <input type="hidden" name="do_import" value="1">
 
             <div class="alter-card" style="margin-bottom:12px">

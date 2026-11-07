@@ -6,12 +6,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $driver = in_array($_POST['driver'] ?? '', ['pgsql','mysql','sqlite']) ? $_POST['driver'] : 'pgsql';
         if ($driver === 'sqlite') {
             $creds = [
-                'driver'   => 'sqlite',
-                'dbname'   => trim($_POST['sqlite_path'] ?? ''),
-                'host'     => '',
-                'port'     => '',
-                'user'     => '',
-                'password' => '',
+                'driver'        => 'sqlite',
+                'dbname'        => trim($_POST['sqlite_path'] ?? ''),
+                'host'          => '',
+                'port'          => '',
+                'user'          => '',
+                'password'      => '',
+                'android_path'  => trim($_POST['android_path'] ?? ''),
+                'android_pkg'   => trim($_POST['android_pkg'] ?? ''),
             ];
         } else {
             $creds = [
@@ -96,7 +98,7 @@ unset($_SESSION['db_error']);
                 <label class="driver-opt" id="drv-mysql">
                     <input type="radio" name="driver" value="mysql" onchange="onDriverChange()">
                     <span class="driver-card">
-                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 3C7.03 3 3 7.03 3 12s4.03 9 9 9 9-4.03 9-9-4.03-9-9-9z" stroke="currentColor" stroke-width="1.5"/><path d="M8 12l3 3 5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><ellipse cx="12" cy="5" rx="9" ry="3" stroke="currentColor" stroke-width="1.5"/><path d="M3 5v5c0 1.657 4.03 3 9 3s9-1.343 9-3V5" stroke="currentColor" stroke-width="1.5"/><path d="M3 10v5c0 1.657 4.03 3 9 3s9-1.343 9-3v-5" stroke="currentColor" stroke-width="1.5"/><path d="M19 14v6M22 17l-3 3-3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
                         MySQL / MariaDB
                     </span>
                 </label>
@@ -147,12 +149,36 @@ unset($_SESSION['db_error']);
             <!-- Form fields untuk SQLite -->
             <div id="fields-sqlite" style="display:none">
                 <div class="form-group">
-                    <label>Path File Database (.db)</label>
+                    <label>Path File Database (.db / .sqlite)</label>
                     <input type="text" name="sqlite_path" id="inp-sqlite-path"
                            placeholder="/Users/nama/database.db"
                            style="font-family:var(--mono,monospace);font-size:13px">
                     <div class="field-hint">Path absolut ke file SQLite. File akan dibuat jika belum ada.</div>
                 </div>
+                <details style="margin-top:4px">
+                    <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;user-select:none">
+                        📱 Sinkron dari Android Emulator (opsional)
+                    </summary>
+                    <div style="margin-top:8px;padding:10px;background:var(--bg-sidebar);border-radius:6px;border:1px solid var(--border)">
+                        <p style="font-size:11px;color:var(--text-muted);margin:0 0 8px">
+                            Isi ini agar tombol <strong>Refresh dari Emulator</strong> muncul di sidebar — untuk menarik file SQLite terbaru dari emulator Android ke komputer.
+                        </p>
+                        <div class="form-group" style="margin-bottom:8px">
+                            <label style="font-size:12px">Path SQLite di dalam Emulator Android</label>
+                            <input type="text" name="android_path" id="inp-android-path"
+                                   placeholder="/data/data/com.app/app_flutter/file.sqlite"
+                                   style="font-family:var(--mono,monospace);font-size:12px">
+                            <div class="field-hint" style="font-size:11px">Contoh: /data/data/com.kasirtoko.kasir_toko/app_flutter/kasir_toko.sqlite</div>
+                        </div>
+                        <div class="form-group" style="margin-bottom:0">
+                            <label style="font-size:12px">Package Name Aplikasi Android</label>
+                            <input type="text" name="android_pkg" id="inp-android-pkg"
+                                   placeholder="com.example.myapp"
+                                   style="font-family:var(--mono,monospace);font-size:12px">
+                            <div class="field-hint" style="font-size:11px">Contoh: com.kasirtoko.kasir_toko</div>
+                        </div>
+                    </div>
+                </details>
             </div>
 
             <button type="submit" class="btn btn-primary btn-full" id="btn-connect" disabled>Hubungkan</button>

@@ -440,3 +440,97 @@ const _tableObserver = new MutationObserver(mutations => {
     });
 });
 _tableObserver.observe(document.body, { childList: true, subtree: true });
+
+
+// ══════════════════════════════════════════════════════════════
+//  Sidebar collapse
+// ══════════════════════════════════════════════════════════════
+function toggleSidebar(force) {
+    const collapsed = typeof force === 'boolean' ? force : !document.body.classList.contains('sidebar-collapsed');
+    document.body.classList.toggle('sidebar-collapsed', collapsed);
+    try { localStorage.setItem('pgm_sidebar_collapsed', collapsed ? '1' : '0'); } catch (e) {}
+}
+(function() {
+    try { if (localStorage.getItem('pgm_sidebar_collapsed') === '1') document.body.classList.add('sidebar-collapsed'); } catch (e) {}
+    document.addEventListener('keydown', e => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b' && document.querySelector('.sidebar')) {
+            e.preventDefault(); toggleSidebar();
+        }
+    });
+})();
+
+
+// ══════════════════════════════════════════════════════════════
+//  Dialog kustom (pengganti confirm/prompt/alert bawaan browser)
+// ══════════════════════════════════════════════════════════════
+function _pgmDialog({ title, message, confirmText = 'OK', cancelText = 'Batal', danger = false,
+                      typeText = null, input = null, hideCancel = false }) {
+    return new Promise(resolve => {
+        const ov = document.createElement('div');
+        ov.className = 'modal-overlay pgm-dialog-overlay';
+        const esc = t => String(t ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+        ov.innerHTML = `
+            <div class="modal pgm-dialog" role="dialog" aria-modal="true">
+                <div class="modal-header"><h3>${esc(title || 'Konfirmasi')}</h3></div>
+                <div class="modal-body">
+                    <div class="pgm-dialog-msg ${danger ? 'danger' : ''}">${esc(message).replace(/\n/g, '<br>')}</div>
+                    ${typeText ? `<p class="pgm-dialog-hint">Ketik <strong>${esc(typeText)}</strong> untuk melanjutkan:</p>
+                                  <input type="text" class="pgm-dialog-input" autocomplete="off" placeholder="${esc(typeText)}">` : ''}
+                    ${input !== null ? `<input type="text" class="pgm-dialog-input" autocomplete="off" value="${esc(input)}">` : ''}
+                </div>
+                <div class="modal-footer">
+                    ${hideCancel ? '' : `<button type="button" class="btn btn-outline" data-act="cancel">${esc(cancelText)}</button>`}
+                    <button type="button" class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-act="ok">${esc(confirmText)}</button>
+                </div>
+            </div>`;
+        const okBtn = ov.querySelector('[data-act=ok]');
+        const inp   = ov.querySelector('.pgm-dialog-input');
+        if (typeText) okBtn.disabled = true;
+        const prevFocus = document.activeElement;
+        const done = v => { ov.remove(); document.removeEventListener('keydown', onKey, true); prevFocus?.focus?.({preventScroll:true}); resolve(v); };
+        const accept = () => { if (okBtn.disabled) return; done(input !== null ? inp.value : true); };
+        const reject = () => done(input !== null ? null : false);
+        function onKey(e) {
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); reject(); }
+            if (e.key === 'Enter')  { e.preventDefault(); e.stopPropagation(); accept(); }
+        }
+        document.addEventListener('keydown', onKey, true);
+        if (typeText) inp.addEventListener('input', () => { okBtn.disabled = inp.value !== typeText; });
+        okBtn.addEventListener('click', accept);
+        ov.querySelector('[data-act=cancel]')?.addEventListener('click', reject);
+        ov.addEventListener('mousedown', e => { if (e.target === ov && !hideCancel) reject(); });
+        document.body.appendChild(ov);
+        (inp || okBtn).focus();
+        if (inp && input !== null) inp.select();
+    });
+}
+const pgmConfirm = opts => _pgmDialog(typeof opts === 'string' ? { message: opts } : opts);
+const pgmAlert   = (message, title = 'Info') => _pgmDialog({ title, message, hideCancel: true });
+const pgmPrompt  = (message, value = '', title = 'Input') => _pgmDialog({ title, message, input: value, confirmText: 'Simpan' });
+
+// Atribut deklaratif: <form data-confirm="..."> atau <button/a data-confirm="..." [data-confirm-danger]>
+(function() {
+    let bypass = false;
+    function opts(el) {
+        return { title: el.dataset.confirmTitle || 'Konfirmasi', message: el.dataset.confirm,
+                 danger: el.hasAttribute('data-confirm-danger'), confirmText: el.dataset.confirmOk || 'Ya, lanjutkan',
+                 typeText: el.dataset.confirmType || null };
+    }
+    document.addEventListener('submit', e => {
+        const f = e.target;
+        if (bypass || !f.matches?.('form[data-confirm]')) return;
+        e.preventDefault();
+        pgmConfirm(opts(f)).then(ok => { if (ok) { bypass = true; f.requestSubmit(e.submitter || undefined); bypass = false; } });
+    }, true);
+    document.addEventListener('click', e => {
+        const el = e.target.closest?.('button[data-confirm], a[data-confirm]');
+        if (!el || bypass) return;
+        e.preventDefault(); e.stopPropagation();
+        pgmConfirm(opts(el)).then(ok => {
+            if (!ok) return;
+            bypass = true;
+            if (el.tagName === 'A') location.href = el.href; else el.click();
+            bypass = false;
+        });
+    }, true);
+})();

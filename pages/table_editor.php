@@ -112,6 +112,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $table) {
         }
 
         if ($postAction === 'truncate') {
+            if (($_POST['confirm_name'] ?? '') !== $table) {
+                throw new Exception('Truncate dibatalkan: nama tabel konfirmasi tidak cocok.');
+            }
             $pdo->exec(truncateSql($schema, $table));
             $message = 'Tabel berhasil dikosongkan.';
         }
@@ -347,6 +350,7 @@ foreach ($activeFilters as $i => $f) {
                 <button onclick="exportTableData('excel')">📊 Excel</button>
             </div>
         </div>
+        <a href="app.php?page=import-csv&schema=<?= urlencode($schema) ?>&table=<?= urlencode($table) ?>" class="btn btn-outline">⬆ Import CSV</a>
         <button class="btn btn-outline btn-danger" onclick="openDropModal()">Drop</button>
         <button class="btn btn-primary" onclick="openInsertModal()">+ Insert Row</button>
     </div>
@@ -381,6 +385,27 @@ foreach ($activeFilters as $i => $f) {
             <span class="filter-badge"><?= count($activeFilters) ?></span>
             <?php endif; ?>
         </button>
+
+        <!-- Tombol Kolom (sembunyikan/tampilkan) -->
+        <div class="export-wrap" id="colvis-wrap">
+            <button type="button" class="btn btn-outline" id="colvis-btn" onclick="toggleColVis(event)">
+                ▥ Kolom <span class="filter-badge" id="colvis-badge" style="display:none"></span>
+            </button>
+            <div class="export-menu colvis-menu" id="colvis-menu" onclick="event.stopPropagation()">
+                <div class="colvis-actions">
+                    <button type="button" onclick="setAllCols(true)">Tampilkan semua</button>
+                    <button type="button" onclick="setAllCols(false)">Sembunyikan semua</button>
+                </div>
+                <?php foreach ($columns as $i => $col): ?>
+                <label class="colvis-item">
+                    <input type="checkbox" class="colvis-chk" data-col="<?= htmlspecialchars($col['column_name']) ?>"
+                           data-idx="<?= $i ?>" checked onchange="onColVisChange()" style="accent-color:var(--accent)">
+                    <span><?= htmlspecialchars($col['column_name']) ?></span>
+                    <span class="col-type"><?= htmlspecialchars($col['data_type']) ?></span>
+                </label>
+                <?php endforeach; ?>
+            </div>
+        </div>
 
         <select name="per_page" onchange="this.form.submit()">
             <?php foreach ([25, 50, 100, 500] as $n): ?>
@@ -515,7 +540,7 @@ function getFilterOpLabels(): array {
                     $sortUrl = $baseUrl . '&search=' . urlencode($search) . '&sort=' . urlencode($col['column_name']) . '&dir=' . $newDir . '&per_page=' . $perPage;
                     $isFiltered = isset($colFilteredMap[$col['column_name']]);
                 ?>
-                <th class="<?= $isFiltered ? 'col-filtered' : '' ?>">
+                <th class="<?= $isFiltered ? 'col-filtered' : '' ?>" data-col="<?= htmlspecialchars($col['column_name']) ?>">
                     <div class="th-inner">
                         <a href="<?= $sortUrl ?>" class="sort-link <?= $sortCol === $col['column_name'] ? 'active' : '' ?>">
                             <?= htmlspecialchars($col['column_name']) ?>
@@ -678,13 +703,17 @@ function getFilterOpLabels(): array {
                 Sequence/auto-increment akan direset ke awal.
             </div>
             <p style="margin-top:8px;color:var(--text-secondary)">Tindakan ini tidak bisa dibatalkan. Pastikan sudah backup terlebih dahulu.</p>
+            <p style="margin-top:12px">Ketik nama tabel untuk konfirmasi:</p>
+            <input type="text" id="truncate-confirm-input" placeholder="<?= htmlspecialchars($table) ?>" autocomplete="off">
         </div>
         <div class="modal-footer">
             <button class="btn btn-outline" onclick="closeModal('modal-truncate')">Batal</button>
             <form method="POST">
                 <?= csrfField() ?>
                 <input type="hidden" name="_action" value="truncate">
-                <button type="submit" class="btn btn-danger">Ya, Truncate Sekarang</button>
+                <input type="hidden" name="confirm_name" id="truncate-confirm-name">
+                <button type="submit" class="btn btn-danger" id="truncate-submit-btn" disabled
+                        onclick="document.getElementById('truncate-confirm-name').value = document.getElementById('truncate-confirm-input').value">Ya, Truncate Sekarang</button>
             </form>
         </div>
     </div>
@@ -718,6 +747,9 @@ const TABLE_NAME = '<?= addslashes($table) ?>';
 const COLUMNS    = <?= json_encode(array_column($columns, 'column_name')) ?>;
 const PK_COL     = '<?= addslashes($pkCol ?? '') ?>';
 
+document.getElementById('truncate-confirm-input')?.addEventListener('input', function() {
+    document.getElementById('truncate-submit-btn').disabled = this.value !== TABLE_NAME;
+});
 document.getElementById('drop-confirm-input')?.addEventListener('input', function() {
     document.getElementById('drop-submit-btn').disabled = this.value !== TABLE_NAME;
 });
@@ -744,7 +776,11 @@ function onRowChkChange() {
 function bulkDelete() {
     const checked = [...document.querySelectorAll('.row-chk:checked')].map(c => c.value);
     if (!checked.length) return;
-    if (!confirm(`Hapus ${checked.length} baris yang dipilih? Tindakan ini tidak bisa dibatalkan.`)) return;
+    pgmConfirm({ title: 'Hapus Baris', message: `Hapus ${checked.length} baris yang dipilih? Tindakan ini tidak bisa dibatalkan.`,
+                 danger: true, confirmText: 'Hapus' }).then(ok => { if (ok) doBulkDelete(checked); });
+}
+
+function doBulkDelete(checked) {
 
     const form = document.createElement('form');
     form.method = 'POST';
@@ -758,6 +794,47 @@ function bulkDelete() {
     form.submit();
 }
 
+// ── Sembunyikan / tampilkan kolom ─────────────────────────────
+const COLVIS_KEY = 'pgm_hidden_cols:' + <?= json_encode($schema . '.' . $table) ?>;
+const COLVIS_OFFSET = PK_COL ? 1 : 0; // kolom checkbox di depan
+
+function toggleColVis(e) {
+    e.stopPropagation();
+    document.getElementById('colvis-menu').classList.toggle('open');
+}
+document.addEventListener('click', () => document.getElementById('colvis-menu')?.classList.remove('open'));
+
+function applyColVis() {
+    const chks   = [...document.querySelectorAll('.colvis-chk')];
+    const hidden = chks.filter(c => !c.checked);
+    let style = document.getElementById('colvis-style');
+    if (!style) { style = document.createElement('style'); style.id = 'colvis-style'; document.head.appendChild(style); }
+    style.textContent = hidden.map(c => {
+        const n = parseInt(c.dataset.idx) + 1 + COLVIS_OFFSET;
+        return `.data-table th:nth-child(${n}), .data-table td:nth-child(${n}):not(.empty-cell) { display: none; }`;
+    }).join('\n');
+    const badge = document.getElementById('colvis-badge');
+    badge.style.display = hidden.length ? '' : 'none';
+    badge.textContent   = hidden.length;
+    return hidden;
+}
+function onColVisChange() {
+    const hidden = applyColVis().map(c => c.dataset.col);
+    try { localStorage.setItem(COLVIS_KEY, JSON.stringify(hidden)); } catch (e) {}
+}
+function setAllCols(show) {
+    const chks = [...document.querySelectorAll('.colvis-chk')];
+    chks.forEach((c, i) => c.checked = show || false);
+    if (!show && chks.length) chks[0].checked = true; // minimal satu kolom tetap tampil
+    onColVisChange();
+}
+(function() {
+    let saved = [];
+    try { saved = JSON.parse(localStorage.getItem(COLVIS_KEY) || '[]'); } catch (e) {}
+    document.querySelectorAll('.colvis-chk').forEach(c => { if (saved.includes(c.dataset.col)) c.checked = false; });
+    applyColVis();
+})();
+
 // ── Inline cell editing ───────────────────────────────────────
 const DS_SCHEMA = '<?= addslashes($schema) ?>';
 const DS_TABLE  = '<?= addslashes($table) ?>';
@@ -767,6 +844,21 @@ function onRowClick(event, tr) {
     if (event.target.closest('.col-chk') || event.target.closest('a')) return;
     // Klik baris tidak melakukan apa-apa — edit lewat klik cell langsung
 }
+
+// Jaga posisi scroll & lebar kolom agar tidak "lompat" saat edit/simpan cell
+function keepScroll(fn) {
+    const wrap = document.querySelector('.table-wrap');
+    const main = document.querySelector('.main-content');
+    const pos  = { wl: wrap?.scrollLeft, wt: wrap?.scrollTop, ml: main?.scrollLeft, mt: main?.scrollTop };
+    fn();
+    if (wrap) { wrap.scrollLeft = pos.wl; wrap.scrollTop = pos.wt; }
+    if (main) { main.scrollLeft = pos.ml; main.scrollTop = pos.mt; }
+}
+function lockCellWidth(td) {
+    const w = td.offsetWidth + 'px';
+    td.style.width = td.style.minWidth = td.style.maxWidth = w;
+}
+function unlockCellWidth(td) { td.style.width = td.style.minWidth = td.style.maxWidth = ''; }
 
 function startCellEdit(event, td) {
     event.stopPropagation();
@@ -781,6 +873,7 @@ function startCellEdit(event, td) {
     const dispW   = td.offsetWidth;
 
     _activeCell = td;
+    lockCellWidth(td);
     td.classList.add('cell-editing');
 
     // Simpan konten asli
@@ -801,11 +894,13 @@ function startCellEdit(event, td) {
     nullBtn.title = 'Set nilai menjadi NULL';
     nullBtn.onclick = (e) => { e.stopPropagation(); saveCellEdit(td, pkVal, col, null, true); };
 
-    td.innerHTML = '';
-    td.appendChild(inp);
-    td.appendChild(nullBtn);
-    inp.focus();
-    inp.select();
+    keepScroll(() => {
+        td.innerHTML = '';
+        td.appendChild(inp);
+        td.appendChild(nullBtn);
+        inp.focus({ preventScroll: true });
+        inp.select();
+    });
 
     inp.addEventListener('keydown', (e) => {
         if (e.key === 'Enter')  { e.preventDefault(); saveCellEdit(td, pkVal, col, inp.value, false); }
@@ -815,7 +910,7 @@ function startCellEdit(event, td) {
             // Pindah ke cell berikutnya
             const cells = [...tr.querySelectorAll('.editable-cell')];
             const idx   = cells.indexOf(td);
-            if (cells[idx + 1]) setTimeout(() => startCellEdit(event, cells[idx + 1]), 50);
+            if (cells[idx + 1]) setTimeout(() => startCellEdit({ stopPropagation(){} }, cells[idx + 1]), 50);
         }
     });
 
@@ -840,9 +935,11 @@ function saveCellEdit(td, pkVal, col, val, setNull) {
     if (setNull && td.dataset.null === '1')  { cancelCellEdit(td); return; }
 
     _activeCell = null;
-    td.classList.remove('cell-editing');
-    td.classList.add('cell-saving');
-    td.innerHTML = '<span style="color:var(--text-muted)">Menyimpan...</span>';
+    keepScroll(() => {
+        td.classList.remove('cell-editing');
+        td.classList.add('cell-saving');
+        td.innerHTML = '<span style="color:var(--text-muted)">Menyimpan...</span>';
+    });
 
     const body = new FormData();
     body.append('schema',   DS_SCHEMA);
@@ -853,10 +950,12 @@ function saveCellEdit(td, pkVal, col, val, setNull) {
     body.append('val',      val ?? '');
     if (setNull) body.append('set_null', '1');
 
+    body.append('csrf_token', <?= json_encode(csrfToken()) ?>);
     fetch('api/cell_update.php', { method: 'POST', body })
         .then(r => r.json())
         .then(data => {
             td.classList.remove('cell-saving');
+            unlockCellWidth(td);
             if (data.ok) {
                 const newVal = data.val;
                 td.dataset.val  = newVal ?? '';
@@ -873,6 +972,7 @@ function saveCellEdit(td, pkVal, col, val, setNull) {
         })
         .catch(() => {
             td.classList.remove('cell-saving');
+            unlockCellWidth(td);
             td.innerHTML = origHtml;
             showCellError(td, 'Koneksi gagal');
         });
@@ -880,8 +980,11 @@ function saveCellEdit(td, pkVal, col, val, setNull) {
 
 function cancelCellEdit(td) {
     if (!td) return;
-    td.classList.remove('cell-editing');
-    td.innerHTML = td.dataset.origHtml || td.innerHTML;
+    keepScroll(() => {
+        td.classList.remove('cell-editing');
+        td.innerHTML = td.dataset.origHtml || td.innerHTML;
+    });
+    unlockCellWidth(td);
     if (_activeCell === td) _activeCell = null;
 }
 

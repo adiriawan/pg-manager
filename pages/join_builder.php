@@ -936,7 +936,7 @@ function toggleJoinWhereVal(sel) {
 // ── SQL copy & CSV export ─────────────────────────────────
 function copySQL() {
     const text = document.getElementById('sql-preview').textContent;
-    navigator.clipboard.writeText(text).then(() => alert('SQL disalin!'));
+    navigator.clipboard.writeText(text).then(() => pgmAlert('SQL disalin!'));
 }
 
 function exportJoinCsv() {

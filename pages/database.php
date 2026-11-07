@@ -447,7 +447,12 @@ window.openModal = function(id) {
 
 function switchDb(dbname) {
     // Arahkan user ke form login dengan database baru
-    if (!confirm(`Hubungkan ke database "${dbname}"? Anda akan keluar dari sesi saat ini.`)) return false;
+    pgmConfirm({ title: 'Hubungkan Database', message: `Hubungkan ke database "${dbname}"? Anda akan keluar dari sesi saat ini.`,
+                 confirmText: 'Hubungkan' }).then(ok => { if (ok) doSwitchDb(dbname); });
+    return false;
+}
+
+function doSwitchDb(dbname) {
     // POST ke index.php dengan dbname baru (gunakan credentials yang sama)
     const form = document.createElement('form');
     form.method = 'POST';
@@ -490,7 +495,7 @@ function mdbCreate() {
             mdbLoadList(); // Refresh daftar
             // Tawari untuk langsung konek
             setTimeout(() => {
-                if (confirm(`Database "${name}" berhasil dibuat. Hubungkan sekarang?`)) switchDb(name);
+                switchDb(name);
             }, 400);
         }
     })
@@ -507,8 +512,11 @@ function mdbDrop() {
     if (confirm_input.value !== dbname) {
         msgEl.innerHTML = `<div class="alert alert-error">Nama konfirmasi tidak cocok. Ketik "<strong>${dbname}</strong>" dengan benar.</div>`; return;
     }
-    if (!confirm(`YAKIN menghapus database "${dbname}"? Semua data akan hilang permanen!`)) return;
+    pgmConfirm({ title: 'Hapus Database', message: `YAKIN menghapus database "${dbname}"? Semua data akan hilang permanen!`,
+                 danger: true, confirmText: 'Hapus Database' }).then(ok => { if (ok) doMdbDrop(dbname, select, confirm_input, msgEl); });
+}
 
+function doMdbDrop(dbname, select, confirm_input, msgEl) {
     msgEl.innerHTML = '<div style="color:var(--text-muted);padding:8px 0">⏳ Menghapus database…</div>';
 
     fetch('api/manage_database.php', {
