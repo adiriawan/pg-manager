@@ -12,10 +12,12 @@ function getConnection(array $creds): PDO {
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         PDO::ATTR_TIMEOUT            => 5,
     ];
+    $readOnly = !empty($_SESSION['readonly']);
     if ($driver === 'sqlite') {
         $dsn = 'sqlite:' . ($creds['dbname'] ?? ':memory:');
         $pdo = new PDO($dsn, null, null, $opts);
         $pdo->exec('PRAGMA foreign_keys = ON');
+        if ($readOnly) $pdo->exec('PRAGMA query_only = ON');
         return $pdo;
     }
     if ($driver === 'mysql') {
@@ -24,8 +26,16 @@ function getConnection(array $creds): PDO {
         $dsn = "pgsql:host={$creds['host']};port={$creds['port']};dbname={$creds['dbname']}";
     }
     $pdo = new PDO($dsn, $creds['user'], $creds['password'], $opts);
+    // Mode baca-saja ditegakkan di level database, bukan hanya di UI
+    if ($readOnly) {
+        $pdo->exec($driver === 'mysql' ? 'SET SESSION TRANSACTION READ ONLY' : 'SET default_transaction_read_only = on');
+    }
     return $pdo;
 }
+
+function isReadOnly(): bool { return !empty($_SESSION['readonly']); }
+
+const READONLY_MSG = 'Mode baca-saja aktif: perubahan data diblokir. Matikan mode ini di sidebar untuk mengubah data.';
 
 function getCredentials(): ?array {
     return $_SESSION['db_creds'] ?? null;
@@ -222,6 +232,108 @@ function truncateSql(string $schema, string $table): string {
     if (isSQLite()) return 'DELETE FROM ' . qi($table);
     if (isMySQL())  return 'TRUNCATE TABLE ' . qualifiedTable($schema, $table);
     return 'TRUNCATE TABLE ' . qualifiedTable($schema, $table) . ' RESTART IDENTITY';
+}
+
+/** Foreign key satu tabel: [kolom => ['schema'=>, 'table'=>, 'column'=>]] (kolom tunggal saja). */
+function getTableForeignKeys(PDO $pdo, string $schema, string $table): array {
+    $out = [];
+    try {
+        if (isSQLite()) {
+            foreach ($pdo->query('PRAGMA foreign_key_list(' . qi($table) . ')')->fetchAll() as $r) {
+                $to = $r['to'];
+                if ($to === null || $to === '') {
+                    foreach (getColumnsInfo($pdo, 'main', $r['table']) as $c) if ($c['is_primary'] === 'YES') { $to = $c['column_name']; break; }
+                }
+                if ($to) $out[$r['from']] = ['schema' => 'main', 'table' => $r['table'], 'column' => $to];
+            }
+        } elseif (isMySQL()) {
+            $st = $pdo->prepare("SELECT COLUMN_NAME c, REFERENCED_TABLE_SCHEMA rs, REFERENCED_TABLE_NAME rt, REFERENCED_COLUMN_NAME rc
+                FROM information_schema.KEY_COLUMN_USAGE
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL");
+            $st->execute([$schema, $table]);
+            foreach ($st->fetchAll() as $r) $out[$r['c']] = ['schema' => $r['rs'], 'table' => $r['rt'], 'column' => $r['rc']];
+        } else {
+            $st = $pdo->prepare("SELECT kcu.column_name AS c, ccu.table_schema AS rs, ccu.table_name AS rt, ccu.column_name AS rc
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+                JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name AND ccu.constraint_schema = tc.table_schema
+                WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = ? AND tc.table_name = ?");
+            $st->execute([$schema, $table]);
+            foreach ($st->fetchAll() as $r) $out[$r['c']] = ['schema' => $r['rs'], 'table' => $r['rt'], 'column' => $r['rc']];
+        }
+    } catch (Exception $e) {}
+    return $out;
+}
+
+// ── Undo hapus baris ──────────────────────────────────────────────
+const UNDO_TTL = 600;        // detik
+const UNDO_MAX_ROWS = 5000;  // batas baris yang disimpan di sesi
+
+/** Simpan baris yang akan dihapus agar bisa diurungkan. Mengembalikan jumlah baris tersimpan atau 0. */
+function undoCapture(PDO $pdo, string $schema, string $table, string $where = '', array $params = [], string $label = 'hapus'): int {
+    try {
+        $st = $pdo->prepare('SELECT * FROM ' . qualifiedTable($schema, $table) . ($where ? " WHERE $where" : '') . ' LIMIT ' . (UNDO_MAX_ROWS + 1));
+        $st->execute($params);
+        $rows = $st->fetchAll();
+    } catch (Exception $e) { return 0; }
+    if (!$rows || count($rows) > UNDO_MAX_ROWS) { unset($_SESSION['undo_delete']); return 0; }
+    foreach ($rows as $r) foreach ($r as $v) if (is_resource($v)) { unset($_SESSION['undo_delete']); return 0; }
+    $_SESSION['undo_delete'] = ['schema' => $schema, 'table' => $table, 'rows' => $rows, 'time' => time(), 'label' => $label];
+    return count($rows);
+}
+
+function undoAvailable(string $schema, string $table): ?array {
+    $u = $_SESSION['undo_delete'] ?? null;
+    if (!$u || $u['schema'] !== $schema || $u['table'] !== $table) return null;
+    if (time() - $u['time'] > UNDO_TTL) { unset($_SESSION['undo_delete']); return null; }
+    return $u;
+}
+
+/** Masukkan kembali baris yang dihapus. Mengembalikan jumlah baris dipulihkan; melempar Exception jika gagal. */
+function undoRestore(PDO $pdo, string $schema, string $table): int {
+    $u = undoAvailable($schema, $table);
+    if (!$u) throw new Exception('Tidak ada penghapusan yang bisa diurungkan (sudah kedaluwarsa).');
+    $rows = $u['rows'];
+    $cols = array_keys($rows[0]);
+    $override = '';
+    if (isPgSQL()) {
+        $st = $pdo->prepare("SELECT column_name, is_generated, identity_generation FROM information_schema.columns WHERE table_schema=? AND table_name=?");
+        $st->execute([$schema, $table]);
+        foreach ($st->fetchAll() as $c) {
+            if (($c['is_generated'] ?? '') === 'ALWAYS') $cols = array_values(array_diff($cols, [$c['column_name']]));
+            if (($c['identity_generation'] ?? '') === 'ALWAYS' && in_array($c['column_name'], $cols)) $override = ' OVERRIDING SYSTEM VALUE';
+        }
+    }
+    $sql = 'INSERT INTO ' . qualifiedTable($schema, $table) . ' (' . implode(',', array_map('qi', $cols)) . ')' . $override
+         . ' VALUES (' . implode(',', array_fill(0, count($cols), '?')) . ')';
+    $own = !$pdo->inTransaction();
+    if ($own) $pdo->beginTransaction();
+    try {
+        $ins = $pdo->prepare($sql);
+        foreach ($rows as $r) {
+            $vals = [];
+            foreach ($cols as $c) {
+                $v = $r[$c];
+                $vals[] = is_bool($v) ? ($v ? '1' : '0') : $v;
+            }
+            $ins->execute($vals);
+        }
+        // Sinkronkan sequence PostgreSQL agar insert berikutnya tidak bentrok
+        if (isPgSQL()) {
+            foreach ($cols as $c) {
+                $seq = $pdo->prepare('SELECT pg_get_serial_sequence(?, ?)');
+                $seq->execute([qualifiedTable($schema, $table), $c]);
+                $seqName = $seq->fetchColumn();
+                if ($seqName) $pdo->query("SELECT setval('" . str_replace("'", "''", $seqName) . "', COALESCE((SELECT MAX(" . qi($c) . ") FROM " . qualifiedTable($schema, $table) . "), 1))");
+            }
+        }
+        if ($own) $pdo->commit();
+    } catch (Exception $e) {
+        if ($own && $pdo->inTransaction()) $pdo->rollBack();
+        throw new Exception('Gagal mengurungkan: ' . $e->getMessage());
+    }
+    unset($_SESSION['undo_delete']);
+    return count($rows);
 }
 
 // Deteksi SQL destruktif (DROP/TRUNCATE/ALTER..DROP, DELETE/UPDATE tanpa WHERE).

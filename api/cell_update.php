@@ -6,6 +6,7 @@ if (!isConnected()) { echo json_encode(['error' => 'Tidak terkoneksi']); exit; }
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') { echo json_encode(['error' => 'Method not allowed']); exit; }
 verifyCsrf();
+if (isReadOnly()) { echo json_encode(['error' => READONLY_MSG]); exit; }
 
 $pdo    = getPdo();
 $schema = $_POST['schema'] ?? '';

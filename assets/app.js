@@ -534,3 +534,58 @@ const pgmPrompt  = (message, value = '', title = 'Input') => _pgmDialog({ title,
         });
     }, true);
 })();
+
+
+// ══════════════════════════════════════════════════════════════
+//  Mode baca-saja
+// ══════════════════════════════════════════════════════════════
+async function toggleReadOnly(on) {
+    if (!on) {
+        const ok = await pgmConfirm({ title: 'Matikan Mode Baca-saja', message: 'Perubahan data akan diizinkan kembali. Lanjutkan?', confirmText: 'Matikan' });
+        if (!ok) return;
+    }
+    const r = await fetch('api/toggle_readonly.php', { method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ csrf_token: window.PGM_CSRF, state: on ? '1' : '0' }) });
+    const d = await r.json();
+    if (d.ok) location.reload(); else pgmAlert(d.error || 'Gagal mengubah mode');
+}
+
+
+// ══════════════════════════════════════════════════════════════
+//  Toast, salin, dan viewer nilai
+// ══════════════════════════════════════════════════════════════
+function pgmToast(msg) {
+    const t = document.createElement('div');
+    t.className = 'pgm-toast'; t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(() => t.classList.add('show'), 10);
+    setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 1800);
+}
+async function pgmCopy(text, okMsg = 'Disalin') {
+    try { await navigator.clipboard.writeText(text); }
+    catch (e) {
+        const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta);
+        ta.select(); document.execCommand('copy'); ta.remove();
+    }
+    pgmToast(okMsg);
+}
+function pgmViewValue(title, text) {
+    const ov = document.createElement('div');
+    ov.className = 'modal-overlay pgm-dialog-overlay';
+    ov.innerHTML = `<div class="modal pgm-viewer" role="dialog" aria-modal="true">
+        <div class="modal-header"><h3></h3><button class="modal-close" type="button">×</button></div>
+        <div class="modal-body"><pre class="pgm-viewer-pre"></pre></div>
+        <div class="modal-footer"><button type="button" class="btn btn-outline" data-act="copy">📋 Salin</button>
+        <button type="button" class="btn btn-primary" data-act="close">Tutup</button></div></div>`;
+    ov.querySelector('h3').textContent = title;
+    ov.querySelector('pre').textContent = text;
+    const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    ov.querySelector('.modal-close').onclick = close;
+    ov.querySelector('[data-act=close]').onclick = close;
+    ov.querySelector('[data-act=copy]').onclick = () => pgmCopy(text, 'Nilai disalin');
+    ov.addEventListener('mousedown', e => { if (e.target === ov) close(); });
+    document.body.appendChild(ov);
+}

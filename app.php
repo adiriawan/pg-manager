@@ -13,6 +13,18 @@ $page   = $_GET['page'] ?? 'table-editor';
 $schema = $_GET['schema'] ?? 'public';
 $table  = $_GET['table'] ?? null;
 
+// ── Mode baca-saja: blokir POST yang menulis (database juga menolak di level koneksi) ──
+if (isReadOnly() && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $allowed = ($page === 'sql-editor')
+            || ($page === 'import-csv' && !isset($_POST['do_import']))
+            || ($page === 'backup' && ($_POST['_action'] ?? '') === 'backup');
+    if (!$allowed) {
+        $_SESSION['flash_ro'] = READONLY_MSG;
+        header('Location: ' . ($_SERVER['REQUEST_URI'] ?? 'app.php'));
+        exit;
+    }
+}
+
 // Untuk SQLite selalu gunakan schema 'main'
 if (isSQLite()) {
     $schema = 'main';
@@ -276,6 +288,10 @@ if (!isSQLite()) {
     <?php endif; ?>
 
     <div class="sidebar-footer">
+        <button type="button" class="btn btn-outline ro-toggle <?= isReadOnly() ? 'ro-on' : '' ?>" style="width:100%;margin-bottom:8px;font-size:12px"
+                onclick="toggleReadOnly(<?= isReadOnly() ? 'false' : 'true' ?>)" title="Blokir semua perubahan data">
+            <?= isReadOnly() ? '🔒 Baca-saja: AKTIF' : '🔓 Mode Baca-saja' ?>
+        </button>
         <button type="button" class="btn btn-outline" style="width:100%;margin-bottom:8px;font-size:12px" onclick="toggleSidebar()" title="Ctrl+B">« Sembunyikan Sidebar</button>
         <form method="POST" action="index.php">
             <input type="hidden" name="action" value="disconnect">
@@ -287,6 +303,12 @@ if (!isSQLite()) {
 <!-- Main Content -->
 <button class="sidebar-expand-btn" onclick="toggleSidebar()" title="Tampilkan sidebar (Ctrl+B)">»</button>
 <main class="main-content <?= in_array($page, ['erd','designer']) ? 'main-erd' : '' ?>">
+    <?php if (isReadOnly()): ?>
+    <div class="ro-banner">🔒 Mode baca-saja aktif — data tidak bisa diubah. <a href="#" onclick="toggleReadOnly(false); return false;">Matikan</a></div>
+    <?php endif; ?>
+    <?php if (!empty($_SESSION['flash_ro'])): ?>
+    <div class="alert alert-error"><?= htmlspecialchars($_SESSION['flash_ro']) ?></div>
+    <?php unset($_SESSION['flash_ro']); endif; ?>
 
     <!-- ── Breadcrumb ────────────────────────────────────── -->
     <?php
@@ -361,6 +383,7 @@ if (!isSQLite()) {
     ?>
 </main>
 
+<script>window.PGM_CSRF = <?= json_encode(csrfToken()) ?>;</script>
 <script src="assets/app.js"></script>
 </body>
 </html><?php ob_end_flush(); ?>

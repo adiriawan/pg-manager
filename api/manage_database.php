@@ -8,6 +8,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') { echo json_encode(['error' => 'Metho
 verifyCsrf();
 
 $action = $_POST['action'] ?? '';
+if (isReadOnly() && in_array($action, ['create','drop'])) { echo json_encode(['error' => READONLY_MSG]); exit; }
 $dbName = trim($_POST['dbname'] ?? '');
 
 // Untuk SQLite: kembalikan info sederhana

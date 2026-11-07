@@ -3,6 +3,7 @@ $result   = null;
 $error    = null;
 $execTime = null;
 $rowCount = null;
+$dryRun   = false;
 $lastSql  = $_SESSION['last_sql'] ?? '';
 
 // BUG-06 FIX: Batas maksimum baris yang dikembalikan SQL Editor
@@ -13,9 +14,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sql'])) {
     $sql = trim($_POST['sql']);
     $_SESSION['last_sql'] = $sql;
     $start = microtime(true);
+    $dryRun       = isset($_POST['dry_run']);
     $dangerReason = dangerousSqlReason($sql);
+    $inTx         = false;
     try {
-        if ($dangerReason && trim($_POST['confirm_danger'] ?? '') !== 'KONFIRMASI') {
+        if ($dryRun) {
+            // Uji coba: jalankan di dalam transaksi lalu ROLLBACK — tidak ada perubahan tersimpan
+            if (isMySQL() && preg_match('/\b(CREATE|DROP|ALTER|TRUNCATE|RENAME)\b/i', $sql)) {
+                throw new Exception('MySQL/MariaDB meng-commit otomatis perintah DDL (CREATE/DROP/ALTER/TRUNCATE), jadi uji coba rollback tidak aman untuk query ini.');
+            }
+            $pdo->beginTransaction();
+            $inTx = true;
+        } elseif ($dangerReason && trim($_POST['confirm_danger'] ?? '') !== 'KONFIRMASI') {
             throw new Exception("Dibatalkan: $dangerReason. Query tidak dijalankan. Ketik KONFIRMASI saat diminta untuk melanjutkan.");
         }
         $stmt = $pdo->query($sql);
@@ -31,8 +41,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sql'])) {
             $result    = [];
             $truncated = false;
         }
+        if ($inTx) { $pdo->rollBack(); $inTx = false; }
     } catch (Exception $e) {
+        if ($inTx && $pdo->inTransaction()) $pdo->rollBack();
         $error     = $e->getMessage();
+        if (isReadOnly() && preg_match('/read[- ]only|readonly|attempt to write/i', $error)) $error = READONLY_MSG;
         $execTime  = round((microtime(true) - $start) * 1000, 2);
         $truncated = false;
     }
@@ -113,6 +126,7 @@ if (isset($_GET['export']) && isset($_SESSION['last_sql'])) {
             <input type="hidden" name="confirm_danger" id="confirm-danger" value="">
             <div class="sql-toolbar">
                 <button type="submit" class="btn btn-primary">▶ Jalankan <kbd style="font-size:10px;margin-left:4px">Ctrl+↵</kbd></button>
+                <button type="submit" name="dry_run" value="1" class="btn btn-outline" title="Jalankan lalu batalkan (rollback) — lihat dampaknya tanpa menyimpan">🧪 Uji (Rollback)</button>
                 <button type="button" class="btn btn-outline" onclick="clearEditor()">Bersihkan</button>
                 <?php if ($result !== null && count($result) > 0): ?>
                 <div class="export-wrap">
@@ -135,6 +149,14 @@ if (isset($_GET['export']) && isset($_SESSION['last_sql'])) {
 SELECT * FROM public.nama_tabel LIMIT 10;"><?= htmlspecialchars($lastSql) ?></textarea>
             </div>
         </form>
+
+        <?php if ($dryRun && !$error): ?>
+        <div class="alert alert-warning dryrun-banner">
+            🧪 <strong>Uji coba:</strong> query dijalankan lalu <strong>dibatalkan (rollback)</strong> — tidak ada perubahan yang tersimpan.
+            Dampak: <strong><?= number_format((int)$rowCount) ?></strong> baris <?= ($result ?? []) ? 'dikembalikan' : 'terpengaruh' ?>.
+            <button type="button" class="btn btn-danger btn-sm" style="margin-left:10px" onclick="document.getElementById('sql-form').requestSubmit()">Terapkan Sungguhan</button>
+        </div>
+        <?php endif; ?>
 
         <?php if ($error): ?>
         <div class="sql-result-header error">
@@ -202,6 +224,7 @@ document.getElementById('sql-form').addEventListener('submit', function(e) {
     const reason = sqlDangerReason(sqlInput.value);
     const hidden = document.getElementById('confirm-danger');
     hidden.value = '';
+    if (e.submitter && e.submitter.name === 'dry_run') return; // uji coba selalu di-rollback
     if (!reason || this._confirmed) return;
     e.preventDefault();
     pgmConfirm({ title: '⚠️ Query Berbahaya', message: reason + '.\n\nPastikan sudah backup.',

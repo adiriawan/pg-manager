@@ -82,9 +82,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $table) {
             $pkCol = $_POST['pk_col'] ?? null;
             $pkVal = $_POST['pk_val'] ?? null;
             if ($pkCol && $pkVal !== null) {
+                $saved = undoCapture($pdo, $schema, $table, qi($pkCol) . ' = ?', [$pkVal]);
                 $sql = 'DELETE FROM ' . qualifiedTable($schema, $table) . ' WHERE ' . qi($pkCol) . ' = ?';
                 $pdo->prepare($sql)->execute([$pkVal]);
-                $message = 'Baris berhasil dihapus.';
+                $message = 'Baris berhasil dihapus.' . ($saved ? ' Bisa diurungkan.' : '');
             }
         }
 
@@ -105,9 +106,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $table) {
             $pkVals    = json_decode($_POST['pk_vals'] ?? '[]', true) ?: [];
             if ($pkColPost && $pkVals) {
                 $placeholders = implode(',', array_fill(0, count($pkVals), '?'));
+                $saved = undoCapture($pdo, $schema, $table, qi($pkColPost) . ' IN (' . $placeholders . ')', $pkVals);
                 $sql = 'DELETE FROM ' . qualifiedTable($schema, $table) . ' WHERE ' . qi($pkColPost) . ' IN (' . $placeholders . ')';
                 $pdo->prepare($sql)->execute($pkVals);
-                $message = count($pkVals) . ' baris berhasil dihapus.';
+                $message = count($pkVals) . ' baris berhasil dihapus.' . ($saved ? ' Bisa diurungkan.' : '');
             }
         }
 
@@ -115,8 +117,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $table) {
             if (($_POST['confirm_name'] ?? '') !== $table) {
                 throw new Exception('Truncate dibatalkan: nama tabel konfirmasi tidak cocok.');
             }
+            $saved = undoCapture($pdo, $schema, $table, '', [], 'truncate');
             $pdo->exec(truncateSql($schema, $table));
-            $message = 'Tabel berhasil dikosongkan.';
+            $message = 'Tabel berhasil dikosongkan.' . ($saved ? ' Bisa diurungkan.' : '');
+        }
+
+        if ($postAction === 'undo_delete') {
+            $n = undoRestore($pdo, $schema, $table);
+            $message = "$n baris berhasil dipulihkan.";
         }
 
         if ($postAction === 'drop') {
@@ -359,6 +367,17 @@ foreach ($activeFilters as $i => $f) {
 <?php if ($message): ?>
 <div class="alert alert-<?= $msgType ?>"><?= htmlspecialchars($message) ?></div>
 <?php endif; ?>
+<?php if ($undo = undoAvailable($schema, $table)): ?>
+<div class="alert alert-warning undo-banner">
+    ↩ <?= count($undo['rows']) ?> baris baru saja dihapus (<?= htmlspecialchars($undo['label']) ?>).
+    <form method="POST" style="display:inline">
+        <?= csrfField() ?>
+        <input type="hidden" name="_action" value="undo_delete">
+        <button type="submit" class="btn btn-primary btn-sm" style="margin-left:8px">Urungkan</button>
+    </form>
+    <span style="color:var(--text-muted);font-size:12px;margin-left:8px">Data yang ikut terhapus via ON DELETE CASCADE tidak ikut dipulihkan. Tersedia 10 menit.</span>
+</div>
+<?php endif; ?>
 
 <!-- ── Toolbar ─────────────────────────────────────────────── -->
 <div class="toolbar">
@@ -396,6 +415,13 @@ foreach ($activeFilters as $i => $f) {
                     <button type="button" onclick="setAllCols(true)">Tampilkan semua</button>
                     <button type="button" onclick="setAllCols(false)">Sembunyikan semua</button>
                 </div>
+                <label class="colvis-item colvis-opt">
+                    <input type="checkbox" id="freeze-chk" checked onchange="toggleFreeze(this.checked)" style="accent-color:var(--accent)">
+                    <span>📌 Kunci kolom pertama saat scroll</span>
+                </label>
+                <label class="colvis-item colvis-opt" style="color:var(--text-muted)" onclick="resetLayout()">
+                    <span>↺ Reset tampilan (lebar, urutan, sembunyi)</span>
+                </label>
                 <?php foreach ($columns as $i => $col): ?>
                 <label class="colvis-item">
                     <input type="checkbox" class="colvis-chk" data-col="<?= htmlspecialchars($col['column_name']) ?>"
@@ -516,6 +542,7 @@ function getFilterOpLabels(): array {
 }
 ?>
 
+<?php $fkMap = getTableForeignKeys($pdo, $schema, $table); ?>
 <!-- Table -->
 <div class="table-wrap">
     <table class="data-table">
@@ -546,6 +573,7 @@ function getFilterOpLabels(): array {
                             <?= htmlspecialchars($col['column_name']) ?>
                             <span class="col-type"><?= htmlspecialchars($col['data_type']) ?></span>
                             <?php if ($col['is_primary'] === 'YES'): ?><span class="badge-pk">PK</span><?php endif; ?>
+                            <?php if (isset($fkMap[$col['column_name']])): $fk = $fkMap[$col['column_name']]; ?><span class="badge-fk" title="Foreign key → <?= htmlspecialchars($fk['table'] . '.' . $fk['column']) ?>">FK</span><?php endif; ?>
                             <?php if ($sortCol === $col['column_name']): ?>
                             <span class="sort-arrow"><?= $sortDir === 'ASC' ? '↑' : '↓' ?></span>
                             <?php endif; ?>
@@ -586,12 +614,16 @@ function getFilterOpLabels(): array {
                     $val = $row[$col['column_name']] ?? null;
                     $isNull = $val === null;
                     $display = $isNull ? '<span class="null-val">NULL</span>' : htmlspecialchars(mb_strimwidth((string)$val, 0, 200, '…'));
+                    $isLong  = !$isNull && (mb_strlen((string)$val) > 80 || preg_match('/^\s*[\[{]/', (string)$val));
+                    $fkInfo  = (!$isNull && isset($fkMap[$col['column_name']])) ? $fkMap[$col['column_name']] : null;
                 ?>
                 <td class="data-cell editable-cell"
                     data-col="<?= htmlspecialchars($col['column_name']) ?>"
                     data-val="<?= htmlspecialchars((string)($val ?? '')) ?>"
                     data-null="<?= $isNull ? '1' : '0' ?>"
-                    title="Klik untuk edit"
+                    <?= $isLong ? 'data-long="1"' : '' ?>
+                    <?= $fkInfo ? "data-fk='" . htmlspecialchars(json_encode($fkInfo), ENT_QUOTES) . "'" : '' ?>
+                    title="Klik untuk edit<?= $fkInfo ? ' · Ctrl+klik: buka baris terkait' : '' ?>"
                     onclick="startCellEdit(event, this)"><?= $display ?></td>
                 <?php endforeach; ?>
             </tr>
@@ -794,9 +826,17 @@ function doBulkDelete(checked) {
     form.submit();
 }
 
-// ── Sembunyikan / tampilkan kolom ─────────────────────────────
-const COLVIS_KEY = 'pgm_hidden_cols:' + <?= json_encode($schema . '.' . $table) ?>;
-const COLVIS_OFFSET = PK_COL ? 1 : 0; // kolom checkbox di depan
+// ── Tata letak kolom: sembunyikan, lebar, urutan, kunci kolom ──
+const LAYOUT_ID  = <?= json_encode($schema . '.' . $table) ?>;
+const COLVIS_KEY = 'pgm_hidden_cols:' + LAYOUT_ID;
+const LAYOUT_KEY = 'pgm_layout:' + LAYOUT_ID;
+const DATA_TABLE = document.querySelector('.data-table');
+if (DATA_TABLE) DATA_TABLE.dataset.resizeInited = '1'; // resize global (app.js) diganti manajer ini
+
+let layout = { widths: {}, order: [], freeze: true };
+try { Object.assign(layout, JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}')); } catch (e) {}
+const saveLayout = () => { try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch (e) {} };
+const cssEsc = v => String(v).replace(/["\\]/g, '\\$&');
 
 function toggleColVis(e) {
     e.stopPropagation();
@@ -804,36 +844,232 @@ function toggleColVis(e) {
 }
 document.addEventListener('click', () => document.getElementById('colvis-menu')?.classList.remove('open'));
 
-function applyColVis() {
-    const chks   = [...document.querySelectorAll('.colvis-chk')];
-    const hidden = chks.filter(c => !c.checked);
-    let style = document.getElementById('colvis-style');
-    if (!style) { style = document.createElement('style'); style.id = 'colvis-style'; document.head.appendChild(style); }
-    style.textContent = hidden.map(c => {
-        const n = parseInt(c.dataset.idx) + 1 + COLVIS_OFFSET;
-        return `.data-table th:nth-child(${n}), .data-table td:nth-child(${n}):not(.empty-cell) { display: none; }`;
-    }).join('\n');
+function hiddenCols() { return [...document.querySelectorAll('.colvis-chk')].filter(c => !c.checked).map(c => c.dataset.col); }
+function visibleColsInOrder() {
+    const hidden = hiddenCols();
+    return [...DATA_TABLE.querySelectorAll('thead th[data-col]')].map(th => th.dataset.col).filter(c => !hidden.includes(c));
+}
+
+function applyLayout() {
+    const hidden = hiddenCols();
+    let style = document.getElementById('layout-style');
+    if (!style) { style = document.createElement('style'); style.id = 'layout-style'; document.head.appendChild(style); }
+    let css = hidden.map(c => `.data-table [data-col="${cssEsc(c)}"] { display: none; }`).join('\n');
+    const vis = visibleColsInOrder();
+    const hasW = vis.some(c => layout.widths[c]);
+    if (hasW) {
+        let total = PK_COL ? 40 : 0;
+        vis.forEach(c => {
+            const w = layout.widths[c] || 150;
+            total += w;
+            css += `\n.data-table th[data-col="${cssEsc(c)}"], .data-table td[data-col="${cssEsc(c)}"] { width:${w}px; min-width:${w}px; max-width:${w}px; }`;
+        });
+        css += `\n.data-table { table-layout: fixed; width: ${total}px; }`;
+    }
+    style.textContent = css;
+
     const badge = document.getElementById('colvis-badge');
     badge.style.display = hidden.length ? '' : 'none';
     badge.textContent   = hidden.length;
-    return hidden;
+    applyFreeze();
 }
+
+function applyFreeze() {
+    DATA_TABLE.querySelectorAll('.frz').forEach(el => { el.classList.remove('frz', 'frz-chk'); el.style.left = ''; });
+    const chk = document.getElementById('freeze-chk'); if (chk) chk.checked = !!layout.freeze;
+    if (!layout.freeze) return;
+    const first = visibleColsInOrder()[0];
+    let left = 0;
+    if (PK_COL) {
+        DATA_TABLE.querySelectorAll('th.col-chk, td.col-chk').forEach(el => { el.classList.add('frz', 'frz-chk'); el.style.left = '0px'; });
+        left = DATA_TABLE.querySelector('th.col-chk')?.offsetWidth || 40;
+    }
+    if (first) DATA_TABLE.querySelectorAll(`[data-col="${cssEsc(first)}"]`).forEach(el => { el.classList.add('frz'); el.style.left = left + 'px'; });
+}
+
 function onColVisChange() {
-    const hidden = applyColVis().map(c => c.dataset.col);
-    try { localStorage.setItem(COLVIS_KEY, JSON.stringify(hidden)); } catch (e) {}
+    try { localStorage.setItem(COLVIS_KEY, JSON.stringify(hiddenCols())); } catch (e) {}
+    applyLayout();
 }
 function setAllCols(show) {
     const chks = [...document.querySelectorAll('.colvis-chk')];
-    chks.forEach((c, i) => c.checked = show || false);
+    chks.forEach(c => c.checked = show);
     if (!show && chks.length) chks[0].checked = true; // minimal satu kolom tetap tampil
     onColVisChange();
 }
+function toggleFreeze(on) { layout.freeze = on; saveLayout(); applyFreeze(); }
+function resetLayout() {
+    layout = { widths: {}, order: [], freeze: true };
+    try { localStorage.removeItem(LAYOUT_KEY); localStorage.removeItem(COLVIS_KEY); } catch (e) {}
+    location.reload();
+}
+
+// Urutan kolom: pindahkan sel di setiap baris sesuai urutan
+function reorderDom(order) {
+    DATA_TABLE.querySelectorAll('tr').forEach(tr => {
+        const cells = [...tr.children].filter(c => c.dataset && c.dataset.col);
+        if (!cells.length) return;
+        const byCol = Object.fromEntries(cells.map(c => [c.dataset.col, c]));
+        order.forEach(c => { if (byCol[c]) tr.appendChild(byCol[c]); });
+    });
+}
+
+function initColumnHeaders() {
+    const ths = DATA_TABLE.querySelectorAll('thead th[data-col]');
+    ths.forEach(th => {
+        th.draggable = true;
+        th.querySelectorAll('a').forEach(a => a.draggable = false);
+        const handle = document.createElement('div');
+        handle.className = 'col-resizer';
+        handle.title = 'Drag untuk mengubah lebar (klik dua kali: reset)';
+        th.appendChild(handle);
+
+        handle.addEventListener('dblclick', e => { e.stopPropagation(); delete layout.widths[th.dataset.col]; saveLayout(); applyLayout(); });
+        handle.addEventListener('mousedown', e => {
+            e.preventDefault(); e.stopPropagation();
+            th.draggable = false;
+            // Snapshot lebar semua kolom tampil agar layout konsisten
+            visibleColsInOrder().forEach(c => {
+                if (!layout.widths[c]) layout.widths[c] = Math.max(60, DATA_TABLE.querySelector(`th[data-col="${cssEsc(c)}"]`).offsetWidth);
+            });
+            const col = th.dataset.col, startX = e.clientX, startW = layout.widths[col];
+            handle.classList.add('resizing');
+            document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
+            const move = ev => { layout.widths[col] = Math.max(60, startW + ev.clientX - startX); applyLayout(); };
+            const up = () => {
+                document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up);
+                handle.classList.remove('resizing'); document.body.style.cursor = ''; document.body.style.userSelect = '';
+                th.draggable = true; saveLayout();
+            };
+            document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
+        });
+
+        // Drag & drop urutan kolom
+        th.addEventListener('dragstart', e => { window._dragCol = th.dataset.col; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', th.dataset.col); th.classList.add('col-dragging'); });
+        th.addEventListener('dragend',   () => { th.classList.remove('col-dragging'); ths.forEach(t => t.classList.remove('col-drop-left', 'col-drop-right')); });
+        th.addEventListener('dragover',  e => {
+            if (!window._dragCol || window._dragCol === th.dataset.col) return;
+            e.preventDefault();
+            const left = e.clientX < th.getBoundingClientRect().left + th.offsetWidth / 2;
+            ths.forEach(t => t.classList.remove('col-drop-left', 'col-drop-right'));
+            th.classList.add(left ? 'col-drop-left' : 'col-drop-right');
+        });
+        th.addEventListener('drop', e => {
+            e.preventDefault();
+            const from = window._dragCol, to = th.dataset.col;
+            if (!from || from === to) return;
+            const before = e.clientX < th.getBoundingClientRect().left + th.offsetWidth / 2;
+            const order = [...DATA_TABLE.querySelectorAll('thead th[data-col]')].map(t => t.dataset.col).filter(c => c !== from);
+            order.splice(order.indexOf(to) + (before ? 0 : 1), 0, from);
+            layout.order = order; saveLayout();
+            reorderDom(order); applyLayout();
+            window._dragCol = null;
+        });
+    });
+}
+
 (function() {
+    if (!DATA_TABLE) return;
     let saved = [];
     try { saved = JSON.parse(localStorage.getItem(COLVIS_KEY) || '[]'); } catch (e) {}
     document.querySelectorAll('.colvis-chk').forEach(c => { if (saved.includes(c.dataset.col)) c.checked = false; });
-    applyColVis();
+    // Terapkan urutan tersimpan (abaikan kolom yang sudah tidak ada, tambahkan kolom baru di akhir)
+    const existing = [...DATA_TABLE.querySelectorAll('thead th[data-col]')].map(t => t.dataset.col);
+    if (layout.order.length) {
+        const order = layout.order.filter(c => existing.includes(c)).concat(existing.filter(c => !layout.order.includes(c)));
+        reorderDom(order);
+    }
+    initColumnHeaders();
+    applyLayout();
 })();
+
+// ── Menu klik kanan, viewer nilai, foreign key ───────────────
+const ACTIVE_FILTERS = <?= json_encode($activeFilters) ?>;
+const isLongVal = v => v !== null && (String(v).length > 80 || /^\s*[\[{]/.test(String(v)));
+
+function cellValue(td) { return td.dataset.null === '1' ? null : td.dataset.val; }
+
+function gotoWithFilter(col, op, val) {
+    const url = new URL(window.location.href);
+    ['filter_col[]', 'filter_op[]', 'filter_val[]', 'filter_logic[]', 'p'].forEach(k => url.searchParams.delete(k));
+    ACTIVE_FILTERS.concat([{ col, op, val: val ?? '', logic: 'AND' }]).forEach(f => {
+        url.searchParams.append('filter_col[]', f.col);
+        url.searchParams.append('filter_op[]', f.op);
+        url.searchParams.append('filter_val[]', f.val);
+        url.searchParams.append('filter_logic[]', f.logic || 'AND');
+    });
+    window.location.href = url.toString();
+}
+
+function gotoFk(td) {
+    const fk = JSON.parse(td.dataset.fk);
+    const u = new URLSearchParams({ page: 'table-editor', schema: fk.schema, table: fk.table });
+    u.append('filter_col[]', fk.column); u.append('filter_op[]', 'eq');
+    u.append('filter_val[]', cellValue(td)); u.append('filter_logic[]', 'AND');
+    window.location.href = 'app.php?' + u.toString();
+}
+
+function viewCellValue(td) {
+    const v = cellValue(td);
+    let text = v === null ? 'NULL' : String(v);
+    let isJson = false;
+    try { if (/^\s*[\[{]/.test(text)) { text = JSON.stringify(JSON.parse(text), null, 2); isJson = true; } } catch (e) {}
+    pgmViewValue(td.dataset.col + (isJson ? ' (JSON)' : ''), text);
+}
+
+let _ctxMenu = null;
+function closeCtxMenu() { _ctxMenu?.remove(); _ctxMenu = null; }
+document.addEventListener('click', closeCtxMenu);
+document.addEventListener('scroll', closeCtxMenu, true);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeCtxMenu(); });
+
+document.addEventListener('contextmenu', e => {
+    const td = e.target.closest('.data-table td.editable-cell');
+    if (!td) return;
+    e.preventDefault();
+    closeCtxMenu();
+    const tr  = td.closest('tr');
+    const val = cellValue(td);
+    const col = td.dataset.col;
+    const items = [
+        PK_COL && ['✎ Edit cell', () => startCellEdit({ stopPropagation(){} }, td)],
+        ['📋 Salin nilai', () => pgmCopy(val === null ? '' : String(val), 'Nilai disalin')],
+        tr.dataset.row && ['📋 Salin baris (JSON)', () => pgmCopy(JSON.stringify(JSON.parse(tr.dataset.row), null, 2), 'Baris disalin')],
+        ['🔍 Lihat nilai lengkap', () => viewCellValue(td)],
+        '-',
+        val === null ? ['⊕ Filter: NULL', () => gotoWithFilter(col, 'is_null', '')]
+                     : ['⊕ Filter: = nilai ini', () => gotoWithFilter(col, 'eq', val)],
+        val === null ? ['⊖ Filter: bukan NULL', () => gotoWithFilter(col, 'is_not_null', '')]
+                     : ['⊖ Filter: ≠ nilai ini', () => gotoWithFilter(col, 'neq', val)],
+        td.dataset.fk && '-',
+        td.dataset.fk && ['➜ Buka baris terkait (' + JSON.parse(td.dataset.fk).table + ')', () => gotoFk(td)],
+        PK_COL && val !== null && '-',
+        PK_COL && val !== null && ['∅ Set NULL', () => { td.dataset.origHtml = td.innerHTML; _activeCell = td; saveCellEdit(td, tr.dataset.pkVal, col, null, true); }],
+    ].filter(Boolean);
+
+    const m = document.createElement('div');
+    m.className = 'cell-ctx-menu';
+    items.forEach(it => {
+        if (it === '-') { const hr = document.createElement('div'); hr.className = 'ctx-sep'; m.appendChild(hr); return; }
+        const b = document.createElement('button');
+        b.type = 'button'; b.textContent = it[0];
+        b.addEventListener('click', ev => { ev.stopPropagation(); closeCtxMenu(); it[1](); });
+        m.appendChild(b);
+    });
+    document.body.appendChild(m);
+    const r = m.getBoundingClientRect();
+    m.style.left = Math.min(e.clientX, window.innerWidth  - r.width  - 8) + 'px';
+    m.style.top  = Math.min(e.clientY, window.innerHeight - r.height - 8) + 'px';
+    _ctxMenu = m;
+});
+
+// Ikon ⤢ (nilai panjang) & Ctrl+klik FK — ditangani sebelum handler edit cell
+document.addEventListener('click', e => {
+    const td = e.target.closest?.('.data-table td.editable-cell');
+    if (!td || td.classList.contains('cell-editing')) return;
+    if (td.dataset.fk && (e.ctrlKey || e.metaKey)) { e.preventDefault(); e.stopPropagation(); gotoFk(td); return; }
+    if (td.dataset.long === '1' && e.clientX > td.getBoundingClientRect().right - 26) { e.preventDefault(); e.stopPropagation(); viewCellValue(td); }
+}, true);
 
 // ── Inline cell editing ───────────────────────────────────────
 const DS_SCHEMA = '<?= addslashes($schema) ?>';
@@ -960,6 +1196,7 @@ function saveCellEdit(td, pkVal, col, val, setNull) {
                 const newVal = data.val;
                 td.dataset.val  = newVal ?? '';
                 td.dataset.null = newVal === null ? '1' : '0';
+                if (isLongVal(newVal)) td.dataset.long = '1'; else delete td.dataset.long;
                 td.innerHTML    = newVal === null
                     ? '<span class="null-val">NULL</span>'
                     : escHtml(String(newVal).length > 200 ? String(newVal).slice(0,200)+'…' : String(newVal));
